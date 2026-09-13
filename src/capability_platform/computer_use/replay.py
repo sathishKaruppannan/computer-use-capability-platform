@@ -57,19 +57,46 @@ class ReplayEngine:
                 return rule
         return None
 
+    @staticmethod
+    def _validate_inputs(
+        artifact: CapabilityArtifact, inputs: dict[str, Any]
+    ) -> RunError | None:
+        """Check inputs against the artifact's typed contract before touching a browser."""
+        for spec in artifact.inputs:
+            value = inputs.get(spec.name)
+            if spec.required and (value is None or value == ""):
+                return RunError(
+                    category=ErrorCategory.VALIDATION,
+                    code="MISSING_INPUT",
+                    message=f"Missing required input '{spec.name}'",
+                )
+            if value is not None and spec.pattern and not re.fullmatch(spec.pattern, str(value)):
+                return RunError(
+                    category=ErrorCategory.VALIDATION,
+                    code="INVALID_INPUT",
+                    message=f"Input '{spec.name}' does not match required pattern {spec.pattern!r}",
+                )
+        return None
+
     async def execute(
         self, artifact: CapabilityArtifact, inputs: dict[str, Any]
     ) -> ExecutionResult:
         run_id = str(uuid4())
         started = datetime.now(UTC)
         evidence = EvidenceCollector(self.evidence_root, run_id)
-        surface = PlaywrightSurface(self.headless)
         result = ExecutionResult(
             run_id=run_id,
             status=RunStatus.FAILURE,
             capability_id=artifact.qualified_id,
             started_at=started,
         )
+        validation_error = self._validate_inputs(artifact, inputs)
+        if validation_error:
+            result.error = validation_error
+            result.completed_at = datetime.now(UTC)
+            evidence.event("validation.failed", error=validation_error.model_dump(mode="json"))
+            return result
+        surface = PlaywrightSurface(self.headless)
         try:
             self.policy.authorize_url(artifact.application.base_url)
             await surface.start(artifact.application.base_url)

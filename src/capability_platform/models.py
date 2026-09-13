@@ -34,6 +34,7 @@ class RunStatus(StrEnum):
 class ErrorCategory(StrEnum):
     BUSINESS = "business"
     RECOVERABLE = "recoverable"
+    VALIDATION = "validation"
     POLICY = "policy"
     AUTH = "auth"
     TARGET_NOT_FOUND = "target_not_found"

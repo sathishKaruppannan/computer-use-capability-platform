@@ -6,7 +6,7 @@ __pycache__/
 *.pyc
 artifacts/*.json
 !artifacts/.gitkeep
-evidence/runs/
+!artifacts/lookup-member-savings-balance.v1.json
 test-results/
 
 
