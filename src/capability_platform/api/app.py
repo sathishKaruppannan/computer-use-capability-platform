@@ -1,8 +1,9 @@
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
 from capability_platform.intervention.manager import interventions
 from capability_platform.runtime import discovery_agent, replay_engine, store
 from capability_platform.settings import settings
@@ -20,6 +21,11 @@ class ExecuteRequest(BaseModel):
     inputs: dict[str, Any]
 
 
+class ResumeRequest(BaseModel):
+    # Only meaningful for an approval-gated pause (risky/irreversible step); ignored otherwise.
+    approved: bool | None = None
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -29,7 +35,7 @@ def health():
 def list_capabilities():
     return [
         {"id": item.qualified_id, "name": item.name, "inputs": item.inputs, "outputs": item.outputs}
-        for item in store().list()
+        for item in store().list_approved()
     ]
 
 
@@ -48,6 +54,8 @@ async def execute(capability_id: str, request: ExecuteRequest):
         artifact = store().load(capability_id)
     except FileNotFoundError as exc:
         raise HTTPException(404, "Capability not found") from exc
+    if artifact.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES:
+        raise HTTPException(403, f"Capability '{capability_id}' is not approved for invocation")
     return await replay_engine().execute(artifact, request.inputs)
 
 
@@ -57,8 +65,13 @@ def list_interventions():
 
 
 @app.post("/interventions/{intervention_id}/resume")
-def resume(intervention_id: str):
+def resume(
+    intervention_id: str,
+    request: ResumeRequest | None = Body(default=None),  # noqa: B008 - FastAPI's own idiom
+):
     try:
-        return interventions.resume(intervention_id)
+        return interventions.resume(
+            intervention_id, approved=request.approved if request else None
+        )
     except KeyError as exc:
         raise HTTPException(404, "Intervention not found") from exc

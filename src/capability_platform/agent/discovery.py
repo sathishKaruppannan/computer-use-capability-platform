@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from anthropic import APIError as AnthropicAPIError
 from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
 from capability_platform.computer_use.surface import PlaywrightSurface
 from capability_platform.models import (
@@ -109,6 +111,8 @@ class ClaudeDiscoveryAgent:
         evidence_root: Path,
         max_steps: int = 20,
         headless: bool = False,
+        openai_api_key: str | None = None,
+        openai_model: str = "gpt-5-mini",
     ) -> None:
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model
@@ -116,27 +120,69 @@ class ClaudeDiscoveryAgent:
         self.evidence_root = evidence_root
         self.max_steps = max_steps
         self.headless = headless
+        # Fallback only: if a single Anthropic call errors mid-discovery, that one decision
+        # falls back to OpenAI instead of aborting the whole run. Not a default provider swap —
+        # Claude remains primary; this is never used when Anthropic is healthy.
+        self.openai_client = AsyncOpenAI(api_key=openai_api_key) if openai_api_key else None
+        self.openai_model = openai_model
 
     async def _decide(
-        self, goal: str, observation: dict[str, Any], history: list[dict[str, Any]]
+        self,
+        goal: str,
+        observation: dict[str, Any],
+        history: list[dict[str, Any]],
+        evidence: EvidenceCollector,
     ) -> dict[str, Any]:
-        response = await self.client.messages.create(  # type: ignore[arg-type]
-            model=self.model,
-            max_tokens=800,
-            system=SYSTEM_PROMPT,
-            tools=[ACTION_TOOL],
-            tool_choice={"type": "tool", "name": "browser_action"},
+        user_content = json.dumps(
+            {"goal": goal, "observation": observation, "actions_so_far": history}
+        )
+        try:
+            response = await self.client.messages.create(  # type: ignore[arg-type]
+                model=self.model,
+                max_tokens=800,
+                system=SYSTEM_PROMPT,
+                tools=[ACTION_TOOL],
+                tool_choice={"type": "tool", "name": "browser_action"},
+                messages=[{"role": "user", "content": user_content}],
+            )
+            block = next(block for block in response.content if block.type == "tool_use")
+            return dict(block.input)
+        except AnthropicAPIError as exc:
+            if not self.openai_client:
+                raise
+            self._fallback_used = True
+            evidence.event(
+                "discovery.provider_fallback",
+                reason=str(exc),
+                from_provider=f"anthropic:{self.model}",
+                to_provider=f"openai:{self.openai_model}",
+            )
+            return await self._decide_via_openai(user_content)
+
+    async def _decide_via_openai(self, user_content: str) -> dict[str, Any]:
+        assert self.openai_client
+        response = await self.openai_client.chat.completions.create(
+            model=self.openai_model,
+            max_completion_tokens=2000,
+            reasoning_effort="low",
             messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            tools=[
                 {
-                    "role": "user",
-                    "content": json.dumps(
-                        {"goal": goal, "observation": observation, "actions_so_far": history}
-                    ),
+                    "type": "function",
+                    "function": {
+                        "name": ACTION_TOOL["name"],
+                        "description": ACTION_TOOL["description"],
+                        "parameters": ACTION_TOOL["input_schema"],
+                    },
                 }
             ],
+            tool_choice={"type": "function", "function": {"name": ACTION_TOOL["name"]}},
         )
-        block = next(block for block in response.content if block.type == "tool_use")
-        return dict(block.input)
+        tool_call = response.choices[0].message.tool_calls[0]
+        return json.loads(tool_call.function.arguments)
 
     async def discover(
         self, goal: str, target_url: str, member_id: str = "10001"
@@ -144,6 +190,7 @@ class ClaudeDiscoveryAgent:
         run_id = str(uuid4())
         evidence = EvidenceCollector(self.evidence_root, run_id)
         surface = PlaywrightSurface(self.headless)
+        self._fallback_used = False
         steps: list[Step] = []
         history: list[dict[str, Any]] = []
         extracted: dict[str, str] = {}
@@ -157,7 +204,7 @@ class ClaudeDiscoveryAgent:
             for index in range(self.max_steps):
                 observation = await surface.observe()
                 evidence.event("discovery.observed", step=index, observation=observation)
-                decision = await self._decide(goal, observation, history)
+                decision = await self._decide(goal, observation, history, evidence)
                 evidence.event("discovery.decided", step=index, decision=decision)
                 action = decision["action"]
                 if action == "complete":
@@ -249,7 +296,11 @@ class ClaudeDiscoveryAgent:
                 ],
                 steps=steps,
                 success=Checkpoint(kind="visible", target=success_target),
-                discovered_by=f"anthropic:{self.model}",
+                discovered_by=(
+                    f"anthropic:{self.model}+openai:{self.openai_model} (fallback used)"
+                    if self._fallback_used
+                    else f"anthropic:{self.model}"
+                ),
                 tags=["member", "savings", "balance", "computer-use"],
             )
             self._enrich_errors(artifact)
@@ -259,7 +310,7 @@ class ClaudeDiscoveryAgent:
             return artifact
         except Exception:
             if surface.page:
-                await evidence.screenshot(surface.page, "discovery-failure")
+                await evidence.screenshot(await surface.screenshot(), "discovery-failure")
             raise
         finally:
             await surface.close()

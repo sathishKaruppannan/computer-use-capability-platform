@@ -52,6 +52,97 @@ Requirement checks against the successful run (`8dcc3190-...`):
 | `c5c43265-c4ce-486c-aee6-c600de73faa1` | `memberId=10002` | `status=success`, `savingsBalance=1220.0` — the discovery-generated artifact, discovered against member 10001, correctly replays for a different member with no LLM involved. |
 | `ff5b2a3c-2e61-4520-b8cc-d83fbf528eef` | `memberId=99999` | `status=business_outcome`, `business_code=MEMBER_NOT_FOUND` |
 
+## Same-session human-in-the-loop handoff (Phase 5)
+
+A controlled, injected interruption: member `10003` (`demo_app/app.py`) always returns an
+unexpected "Session Notice" interstitial on search — a stand-in for a real unexpected dialog.
+An error rule (`category=recoverable, recovery=pause`) added to the "click Search" step detects
+it and pauses. Two real runs, both against the live demo app, no LLM involved:
+
+| Run ID | Scenario | Result |
+|---|---|---|
+| `d552746b-2090-403f-b341-befcbfeb5f7e` | Human dismisses the interstitial on the same page, then resumes | `status=success`, `savingsBalance=875.5`. Full control-transfer sequence in `events.jsonl`: `step.started(step-2)` → `intervention.created` (run/capability/step/reason/state/screenshot) → `control.transferred(human)` → *(human clicks "Continue" on the exact same `Page` object, obtained via `interventions.get_page()`)* → `control.transferred(automation)` → `resume.observed` (accessibility snapshot shows the interstitial is genuinely gone) → `resume.validated` → `step.started(step-3)` → ... → `replay.completed`. |
+| `cf0a404b-0fc5-4848-9a79-2b19d543b574` | Human resumes **without** dismissing the interstitial | `status=failure`, `error.category=checkpoint_failed`, `error.message="Interruption at step 'step-2' was not resolved before resume — the condition is still present"`, with a fresh screenshot. Proves the re-validation step (requirement: "re-observe and validate before continuing") isn't a no-op — a bad resume is caught, not silently accepted. |
+
+**Same-session, not a new browser**: `InterventionManager` now holds a live `Page` handle
+per intervention (`_pages`, in-process only, never serialized into the `Intervention` model or
+any API/evidence payload) so a same-process actor can fetch the *exact* page the paused run is
+using — confirmed in the first run above by observing the page's URL and DOM state before and
+after the human's action, with no `surface.start()`/`close()` in between (the `PlaywrightSurface`
+instance is created once per replay and only closed at the very end).
+
+Automated test coverage: `tests/test_intervention.py` (2 tests, `@pytest.mark.e2e`) — the happy
+path above, and the negative path (resume without resolving).
+
+## OpenAI GPT-5 mini as a per-call discovery fallback (post-review follow-up: closing T17)
+
+Claude remains the primary discovery provider. If a single Anthropic call errors mid-run (any
+`anthropic.APIError` — connection, timeout, rate limit, 5xx, auth), that one decision falls back
+to GPT-5 mini instead of aborting the whole discovery run. Verified genuinely, not simulated:
+
+1. Confirmed the OpenAI key works with a real minimal call, then with the actual
+   `browser_action` tool-calling shape used by discovery — GPT-5 mini correctly returned
+   `strategy=role, value=textbox, name="Member Number"` on the first attempt.
+2. Ran real discovery with Anthropic **deliberately broken** (`CLAUDE_MODEL=claude-invalid-model-xyz`,
+   a genuine model name that doesn't exist — a real 404 from the real Anthropic API, not a mock)
+   while OpenAI stayed correctly configured. Every one of the 6 decision rounds hit the real
+   Anthropic error and fell back to a real GPT-5 mini call. Run
+   `evidence/runs/484a2e8c-e7d8-498d-a4a6-2ee41fb1d0c0/`:
+   - `discovery.provider_fallback` events show the real error
+     (`"Error code: 404 - ... 'message': 'model: claude-invalid-model-xyz'"`) and
+     `from_provider`/`to_provider`.
+   - The resulting artifact's `discovered_by` field accurately records
+     `"anthropic:claude-invalid-model-xyz+openai:gpt-5-mini (fallback used)"` — a real bug
+     (found immediately, before it could go undetected) where this field was hardcoded to only
+     ever say `anthropic:...` regardless of which provider actually made the decisions, fixed
+     before this evidence was captured.
+   - GPT-5 mini produced a fully correct, generalizable artifact on the first attempt — correct
+     `role`/`name` pairing throughout, and the stable `xpath` locator for the one
+     input-dependent value (`//tr[td[contains(.,'Primary Savings')]]/td[2]`) — the same quality
+     bar Claude itself needed two attempts to reach in Phase 4.
+3. Replayed the resulting artifact for member 10002 with no LLM involved
+   (`evidence/runs/316da14b-.../`): `status=success, savingsBalance=1220.0`.
+
+Automated tests (`tests/test_discovery_fallback.py`, 3 tests) use mocked clients so they run in
+CI without real keys: fallback triggers on a real-shaped Anthropic error, the fallback correctly
+re-raises if no OpenAI key is configured (no silent swallow), and — importantly — OpenAI is
+*never* called when Anthropic succeeds (asserted directly, not just assumed).
+
+## Risky-action approval flow (post-review follow-up: closing T6)
+
+The PDF (§3.4) leaves the mechanism for handling risky/irreversible actions entirely open
+("block, require confirmation, or flag — your call, justify it"). Implemented "require
+confirmation" by reusing the same same-session intervention mechanism as an
+unexpected-condition handoff, rather than building a second escalation path: before a
+risky/irreversible step runs, `ReplayEngine` pauses and creates an intervention; a human
+approves or denies via `interventions.resume(id, approved=True|False)` (REST:
+`POST /interventions/<id>/resume` with `{"approved": true|false}`); a denial fails the run with
+a structured `APPROVAL_DENIED` error rather than proceeding.
+
+Two real runs, both against the live demo app, no LLM involved (member `10002`'s "click Open
+Accounts" step temporarily marked `risky` for the test):
+
+| Run ID | Scenario | Result |
+|---|---|---|
+| `1c3f0f3a-1010-4e66-bb27-4ca28d6fd17a` | Human approves | `status=success`, `savingsBalance=1220.0`. Intervention carried full context (`reason="Step 'step-3' is risky and requires human approval before it runs"`, accessibility state, screenshot). |
+| `573ee8cd-0958-4ead-9db8-d4e321af9b8c` | Human denies | `status=failure`, `error.category=policy`, `error.code=APPROVAL_DENIED`, with a fresh screenshot at the point of denial — not silently treated as approved. |
+
+Automated tests: `tests/test_approval.py` (2 tests, `@pytest.mark.e2e`) — both outcomes above.
+
+## Automated wait/retry recovery (post-review follow-up: closing T4)
+
+The PDF glossary's own example of a "recoverable condition" is "wait/retry a transient load" —
+previously declared in the schema (`ErrorRule.recovery: "retry"`) but never dispatched by the
+executor. Fixed in `computer_use/replay.py`; demonstrated with a real run: member `10004`'s
+search result always shows a "Loading member details..." banner that clears itself client-side
+after 1.2s (`demo_app/app.py`), no human involved.
+
+Run `d77a2c55-6ffd-40f7-b0e4-f7cdf35a90f4`: 3 `recoverable.retry` events (500ms apart) then
+`recoverable.resolved`, then `status=success, savingsBalance=3300.0`. Automated tests:
+`tests/test_replay_recoverable.py` (success within budget, and a negative case where the budget
+is deliberately too small and the run fails hard with a clear message rather than hanging or
+silently succeeding).
+
 ## User-reported failure, diagnosed and fixed (Phase 4b)
 
 Running the same discovery goal again (user-triggered), a fourth real run

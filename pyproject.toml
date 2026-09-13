@@ -6,7 +6,8 @@ requires-python = ">=3.11"
 dependencies = [
   "anthropic>=0.49.0",
   "fastapi>=0.115.0",
-  "mcp>=1.6.0",
+  "mcp>=2.0.0",
+  "openai>=1.99.0",
   "playwright>=1.51.0",
   "pydantic>=2.10.0",
   "pydantic-settings>=2.7.0",
@@ -30,7 +31,7 @@ packages = ["src/capability_platform"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 markers = ["e2e: requires the live demo app and Playwright browser"]
 
 [tool.ruff]

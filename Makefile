@@ -1,11 +1,14 @@
-.PHONY: install test lint demo platform discover replay mcp
+.PHONY: install test test-e2e lint demo platform discover replay mcp
 
 install:
 	uv sync --extra dev
 	uv run playwright install chromium
 
 test:
-	uv run pytest -q
+	uv run pytest -q -m "not e2e"
+
+test-e2e:
+	uv run pytest -q -m e2e
 
 lint:
 	uv run ruff check .

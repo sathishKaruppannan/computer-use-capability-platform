@@ -24,6 +24,16 @@ async def run(args) -> None:
         print(GroundedSynthesizer.synthesize(result))
     elif args.command == "list":
         print(json.dumps([item.qualified_id for item in store().list()], indent=2))
+    elif args.command == "approve":
+        artifact = store().load(args.capability)
+        artifact.lifecycle = "approved"
+        path = store().save(artifact)
+        print(
+            json.dumps(
+                {"artifact": artifact.qualified_id, "lifecycle": artifact.lifecycle, "path": str(path)},
+                indent=2,
+            )
+        )
 
 
 def main() -> None:
@@ -37,6 +47,8 @@ def main() -> None:
     replay.add_argument("capability")
     replay.add_argument("--input", action="append", default=[])
     commands.add_parser("list")
+    approve = commands.add_parser("approve")
+    approve.add_argument("capability")
     asyncio.run(run(parser.parse_args()))
 
 

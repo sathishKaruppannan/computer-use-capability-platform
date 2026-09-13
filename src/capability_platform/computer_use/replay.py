@@ -1,9 +1,10 @@
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from capability_platform.computer_use.surface import PlaywrightSurface
+from capability_platform.computer_use.surface import PlaywrightSurface, SurfaceAdapter
 from capability_platform.intervention.manager import interventions
 from capability_platform.models import (
     ActionType,
@@ -22,10 +23,19 @@ from capability_platform.policy.engine import PolicyEngine, PolicyViolation
 class ReplayEngine:
     """Executes artifact steps exactly as declared. This module has no LLM dependency."""
 
-    def __init__(self, policy: PolicyEngine, evidence_root, headless: bool = False) -> None:
+    def __init__(
+        self,
+        policy: PolicyEngine,
+        evidence_root,
+        headless: bool = False,
+        surface_factory: Callable[[bool], SurfaceAdapter] = PlaywrightSurface,
+    ) -> None:
         self.policy = policy
         self.evidence_root = evidence_root
         self.headless = headless
+        # Defaults to the concrete Playwright driver but takes any SurfaceAdapter — this is the
+        # seam a desktop/legacy-web adapter would plug into without changing this class at all.
+        self.surface_factory = surface_factory
 
     @staticmethod
     def _render(value: str | None, inputs: dict[str, Any]) -> str:
@@ -34,12 +44,11 @@ class ReplayEngine:
         return re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda match: str(inputs[match.group(1)]), value)
 
     async def _checkpoint(
-        self, surface: PlaywrightSurface, checkpoint: Checkpoint, inputs: dict[str, Any]
+        self, surface: SurfaceAdapter, checkpoint: Checkpoint, inputs: dict[str, Any]
     ) -> bool:
-        assert surface.page
         expected = self._render(checkpoint.expected, inputs)
         if checkpoint.kind == "url":
-            return expected in surface.page.url
+            return expected in await surface.current_url()
         if checkpoint.kind == "visible":
             return bool(checkpoint.target and await surface.visible(checkpoint.target))
         if checkpoint.kind == "hidden":
@@ -47,15 +56,58 @@ class ReplayEngine:
         if checkpoint.kind == "text":
             return bool(checkpoint.target and expected in await surface.extract(checkpoint.target))
         if checkpoint.kind == "value":
-            element = await surface.resolve(checkpoint.target) if checkpoint.target else None
-            return bool(element and await element.input_value() == expected)
+            value = await surface.value_of(checkpoint.target) if checkpoint.target else None
+            return value == expected
         return False
 
-    async def _check_errors(self, surface: PlaywrightSurface, step: Step, inputs: dict[str, Any]):
+    async def _check_errors(self, surface: SurfaceAdapter, step: Step, inputs: dict[str, Any]):
         for rule in step.errors:
             if await self._checkpoint(surface, rule.when, inputs):
                 return rule
         return None
+
+    async def _request_approval(
+        self,
+        evidence: EvidenceCollector,
+        run_id: str,
+        artifact: CapabilityArtifact,
+        step: Step,
+        surface: SurfaceAdapter,
+        result: ExecutionResult,
+    ) -> bool:
+        """Pause on the same live session for human approval of a risky/irreversible step,
+        reusing the same intervention mechanism as an unexpected-condition handoff."""
+        screenshot = await evidence.screenshot(await surface.screenshot(), f"approval-{step.id}")
+        paused_state = await surface.observe()
+        reason = f"Step {step.id!r} is {step.risk} and requires human approval before it runs"
+        item = interventions.create(
+            run_id,
+            reason,
+            capability_id=artifact.qualified_id,
+            step_id=step.id,
+            screenshot=screenshot,
+            state=paused_state,
+            page=surface.page,
+        )
+        result.intervention_id = item.id
+        evidence.event(
+            "intervention.created",
+            intervention_id=item.id,
+            run_id=run_id,
+            capability_id=artifact.qualified_id,
+            step_id=step.id,
+            reason=reason,
+            screenshot=screenshot,
+            state=paused_state,
+        )
+        evidence.event("control.transferred", owner="human", intervention_id=item.id)
+        result.status = RunStatus.PAUSED
+        approved = await interventions.wait_for_approval(item.id)
+        result.status = RunStatus.FAILURE
+        evidence.event(
+            "control.transferred", owner="automation", intervention_id=item.id, approved=approved
+        )
+        return approved
 
     @staticmethod
     def _validate_inputs(
@@ -96,15 +148,36 @@ class ReplayEngine:
             result.completed_at = datetime.now(UTC)
             evidence.event("validation.failed", error=validation_error.model_dump(mode="json"))
             return result
-        surface = PlaywrightSurface(self.headless)
+        surface = self.surface_factory(self.headless)
         try:
             self.policy.authorize_url(artifact.application.base_url)
             await surface.start(artifact.application.base_url)
             evidence.event("replay.started", capability=artifact.qualified_id, inputs=inputs)
             for step in artifact.steps:
                 evidence.event("step.started", step_id=step.id, action=step.action)
+                approved_for_step = False
+                if self.policy.requires_approval(step):
+                    approved_for_step = await self._request_approval(
+                        evidence, run_id, artifact, step, surface, result
+                    )
+                    if not approved_for_step:
+                        denial_screenshot = await evidence.screenshot(
+                            await surface.screenshot(), f"denied-{step.id}"
+                        )
+                        result.error = RunError(
+                            category=ErrorCategory.POLICY,
+                            code="APPROVAL_DENIED",
+                            message=f"Step {step.id} ({step.risk}) was denied by human review",
+                            step_id=step.id,
+                            evidence_path=denial_screenshot,
+                        )
+                        result.completed_at = datetime.now(UTC)
+                        # Let the enclosing try's `finally` emit replay.finished and close the
+                        # surface, same as the BUSINESS_OUTCOME early-return path below does —
+                        # doing it here too would double-close and double-log.
+                        return result
                 try:
-                    self.policy.authorize_step(step)
+                    self.policy.authorize_step(step, approved=approved_for_step)
                     error_rule = await self._check_errors(surface, step, inputs)
                     if error_rule and error_rule.category == ErrorCategory.BUSINESS:
                         result.status = RunStatus.BUSINESS_OUTCOME
@@ -113,17 +186,15 @@ class ReplayEngine:
                         evidence.event("business_outcome", code=error_rule.code, step_id=step.id)
                         return result
                     if step.action == ActionType.NAVIGATE:
-                        assert surface.page
                         url = self._render(step.value, inputs)
                         self.policy.authorize_url(url)
-                        await surface.page.goto(url)
+                        await surface.navigate(url)
                     elif step.action == ActionType.CLICK:
                         await surface.click(step.target)
                     elif step.action == ActionType.TYPE:
                         await surface.type(step.target, self._render(step.value, inputs))
                     elif step.action == ActionType.WAIT:
-                        assert surface.page
-                        await surface.page.wait_for_timeout(int(step.value or "500"))
+                        await surface.wait(int(step.value or "500"))
                     elif step.action == ActionType.EXTRACT:
                         raw = await surface.extract(step.target)
                         result.outputs[step.output or step.id] = (
@@ -143,26 +214,72 @@ class ReplayEngine:
                                 "business_outcome", code=error_rule.code, step_id=step.id
                             )
                             return result
+                        if error_rule.recovery == "retry":
+                            resolved = False
+                            for attempt in range(error_rule.max_retries):
+                                await surface.wait(500)
+                                evidence.event(
+                                    "recoverable.retry",
+                                    code=error_rule.code,
+                                    step_id=step.id,
+                                    attempt=attempt + 1,
+                                    max_retries=error_rule.max_retries,
+                                )
+                                if not await self._checkpoint(surface, error_rule.when, inputs):
+                                    resolved = True
+                                    break
+                            if not resolved:
+                                raise RuntimeError(
+                                    f"Recoverable condition {error_rule.code!r} at step "
+                                    f"{step.id!r} did not clear after "
+                                    f"{error_rule.max_retries} retries"
+                                )
+                            evidence.event(
+                                "recoverable.resolved", code=error_rule.code, step_id=step.id
+                            )
+                            continue
                         if error_rule.recovery == "pause":
-                            screenshot = await evidence.screenshot(surface.page, f"pause-{step.id}")
+                            screenshot = await evidence.screenshot(await surface.screenshot(), f"pause-{step.id}")
+                            paused_state = await surface.observe()
                             item = interventions.create(
                                 run_id,
                                 error_rule.message,
+                                capability_id=artifact.qualified_id,
                                 step_id=step.id,
                                 screenshot=screenshot,
-                                state=await surface.observe(),
+                                state=paused_state,
+                                page=surface.page,
                             )
                             result.intervention_id = item.id
                             evidence.event(
+                                "intervention.created",
+                                intervention_id=item.id,
+                                run_id=run_id,
+                                capability_id=artifact.qualified_id,
+                                step_id=step.id,
+                                reason=error_rule.message,
+                                screenshot=screenshot,
+                                state=paused_state,
+                            )
+                            evidence.event(
                                 "control.transferred", owner="human", intervention_id=item.id
                             )
+                            result.status = RunStatus.PAUSED
                             await interventions.wait_for_resume(item.id)
+                            result.status = RunStatus.FAILURE  # in-progress sentinel again
                             evidence.event(
                                 "control.transferred",
                                 owner="automation",
                                 intervention_id=item.id,
                             )
-                            evidence.event("resume.observed", state=await surface.observe())
+                            resumed_state = await surface.observe()
+                            evidence.event("resume.observed", state=resumed_state)
+                            if await self._checkpoint(surface, error_rule.when, inputs):
+                                raise RuntimeError(
+                                    f"Interruption at step {step.id!r} was not resolved "
+                                    "before resume — the condition is still present"
+                                )
+                            evidence.event("resume.validated", step_id=step.id)
                             continue
                         raise RuntimeError(error_rule.message)
                     if step.checkpoint and not await self._checkpoint(
@@ -174,14 +291,14 @@ class ReplayEngine:
                 except PolicyViolation:
                     raise
                 except Exception as exc:
-                    screenshot = await evidence.screenshot(surface.page, f"failure-{step.id}")
+                    screenshot = await evidence.screenshot(await surface.screenshot(), f"failure-{step.id}")
                     raise StepFailure(step.id, str(exc), screenshot) from exc
 
             if not await self._checkpoint(surface, artifact.success, inputs):
                 raise StepFailure(
                     "success",
                     "final checkpoint failed",
-                    await evidence.screenshot(surface.page, "failure-final"),
+                    await evidence.screenshot(await surface.screenshot(), "failure-final"),
                 )
             result.status = RunStatus.SUCCESS
             result.completed_at = datetime.now(UTC)

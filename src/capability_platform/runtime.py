@@ -23,4 +23,6 @@ def discovery_agent() -> ClaudeDiscoveryAgent:
         settings.evidence_dir,
         settings.max_discovery_steps,
         settings.headless,
+        openai_api_key=settings.openai_api_key,
+        openai_model=settings.openai_model,
     )

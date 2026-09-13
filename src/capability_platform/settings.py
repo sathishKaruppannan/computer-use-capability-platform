@@ -8,6 +8,10 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str | None = None
     claude_model: str = "claude-sonnet-4-5"
+    # Optional fallback used mid-discovery if a single Anthropic call errors — not a default
+    # provider swap. See agent/discovery.py's per-call fallback in _decide().
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-5-mini"
     target_url: str = "http://127.0.0.1:8001"
     platform_url: str = "http://127.0.0.1:8000"
     headless: bool = False

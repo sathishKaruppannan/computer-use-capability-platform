@@ -7,7 +7,7 @@ Read `README.md` and `REPORT.md` first. Preserve the core invariant:
 ## Commands
 
 - Install: `uv sync --extra dev && uv run playwright install chromium`
-- Test: `uv run pytest -q`
+- Test: `uv run pytest -q -m "not e2e"` (add `-m e2e` for the browser-dependent tests, which need the demo app running on port 8001)
 - Lint: `uv run ruff check .`
 - Demo app: `uv run uvicorn demo_app.app:app --port 8001`
 - Platform API: `uv run uvicorn capability_platform.api.app:app --port 8000`

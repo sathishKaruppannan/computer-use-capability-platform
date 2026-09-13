@@ -8,10 +8,21 @@ from capability_platform.models import Locator, Target
 
 
 class SurfaceAdapter(Protocol):
+    """What ReplayEngine is allowed to depend on. A desktop/legacy-web adapter implements this
+    same contract; ReplayEngine never reaches past it into a concrete driver (e.g. Playwright)."""
+
+    async def start(self, url: str) -> Any: ...
+    async def close(self) -> None: ...
     async def observe(self) -> dict[str, Any]: ...
+    async def current_url(self) -> str: ...
+    async def navigate(self, url: str) -> None: ...
+    async def wait(self, ms: int) -> None: ...
     async def click(self, target: Target) -> None: ...
     async def type(self, target: Target, value: str) -> None: ...
     async def extract(self, target: Target) -> str: ...
+    async def visible(self, target: Target) -> bool: ...
+    async def value_of(self, target: Target) -> str | None: ...
+    async def screenshot(self) -> bytes: ...
 
 
 class PlaywrightSurface:
@@ -38,6 +49,22 @@ class PlaywrightSurface:
         assert self.page
         snapshot = await self.page.locator("body").aria_snapshot()
         return {"url": self.page.url, "accessibility": snapshot[:15_000]}
+
+    async def current_url(self) -> str:
+        assert self.page
+        return self.page.url
+
+    async def navigate(self, url: str) -> None:
+        assert self.page
+        await self.page.goto(url)
+
+    async def wait(self, ms: int) -> None:
+        assert self.page
+        await self.page.wait_for_timeout(ms)
+
+    async def screenshot(self) -> bytes:
+        assert self.page
+        return await self.page.screenshot(full_page=True)
 
     def _locator(self, locator: Locator):
         assert self.page
@@ -81,3 +108,6 @@ class PlaywrightSurface:
             return await (await self.resolve(target)).is_visible()
         except LookupError:
             return False
+
+    async def value_of(self, target: Target) -> str | None:
+        return await (await self.resolve(target)).input_value()

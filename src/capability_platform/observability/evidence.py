@@ -10,6 +10,8 @@ class Redactor:
         (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[REDACTED_SSN]"),
         (re.compile(r"(?i)(authorization[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_TOKEN]"),
         (re.compile(r"(?i)(api[_-]?key[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_SECRET]"),
+        (re.compile(r"(?i)(cookie[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_COOKIE]"),
+        (re.compile(r"(?i)(session[_-]?id[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_SESSION]"),
     ]
 
     @classmethod
@@ -37,7 +39,10 @@ class EvidenceCollector:
         with self.log_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record) + "\n")
 
-    async def screenshot(self, page: Any, name: str) -> str:
+    async def screenshot(self, image_bytes: bytes, name: str) -> str:
+        """Takes raw image bytes, not a driver object — callers get bytes from their own
+        surface/adapter (e.g. `await surface.screenshot()`), keeping this evidence sink
+        independent of any particular automation driver."""
         path = self.run_dir / f"{name}.png"
-        await page.screenshot(path=str(path), full_page=True)
+        path.write_bytes(image_bytes)
         return str(path)
