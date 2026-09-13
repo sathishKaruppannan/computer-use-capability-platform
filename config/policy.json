@@ -1,0 +1,10 @@
+{
+  "allowedHosts": ["127.0.0.1", "localhost", "demo-app"],
+  "allowedActions": ["navigate", "click", "type", "select", "wait", "extract", "assert"],
+  "maxRiskWithoutApproval": "reversible",
+  "dataPolicy": {
+    "persist": ["runId", "capabilityId", "stepId", "redactedInputs", "outputs"],
+    "neverPersist": ["credentials", "tokens", "fullSSN", "sessionCookies"]
+  }
+}
+

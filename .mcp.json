@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "learned-capabilities": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "capability_platform.mcp.server"],
+      "env": {"ARTIFACT_DIR": "artifacts", "EVIDENCE_DIR": "evidence"}
+    }
+  }
+}
+
