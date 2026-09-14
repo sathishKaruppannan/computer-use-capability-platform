@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from anthropic import APIError as AnthropicAPIError
@@ -254,7 +254,7 @@ class ClaudeDiscoveryAgent:
                     target=target,
                     value=value,
                     output=decision.get("output"),
-                    risk=RiskLevel.READ_ONLY,
+                    risk=self._classify_risk(step_action, target),
                 )
                 self.policy.authorize_step(step)
                 if step_action == ActionType.CLICK:
@@ -314,6 +314,30 @@ class ClaudeDiscoveryAgent:
             raise
         finally:
             await surface.close()
+
+    # Deliberately code-side, never model-decided: the model must not be able to talk its way
+    # into a lower risk classification for its own step. Keeps policy independent of planning
+    # (CLAUDE.md rule 2) even at the point risk is first assigned, not just when it's enforced.
+    MUTATING_CLICK_KEYWORDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "save", "submit", "update", "delete", "remove", "confirm", "pay",
+            "transfer", "send", "approve", "reject", "deactivate", "activate",
+        }
+    )
+
+    @classmethod
+    def _classify_risk(cls, action: ActionType, target: Target | None) -> RiskLevel:
+        if action in (ActionType.EXTRACT, ActionType.WAIT, ActionType.NAVIGATE):
+            return RiskLevel.READ_ONLY
+        if action in (ActionType.TYPE, ActionType.SELECT):
+            return RiskLevel.REVERSIBLE  # data entry only; nothing committed yet
+        if action == ActionType.CLICK and target:
+            label = " ".join(
+                part for part in (target.primary.name, target.primary.value) if part
+            ).lower()
+            if any(keyword in label for keyword in cls.MUTATING_CLICK_KEYWORDS):
+                return RiskLevel.RISKY
+        return RiskLevel.READ_ONLY
 
     @staticmethod
     def _enrich_errors(artifact: CapabilityArtifact) -> None:

@@ -1,0 +1,13 @@
+{"timestamp": "2026-09-14T00:16:18.278615+00:00", "event": "replay.started", "capability": "lookup-member-savings-balance.v1", "inputs": {"memberId": "10002"}}
+{"timestamp": "2026-09-14T00:16:18.279006+00:00", "event": "step.started", "step_id": "step-1", "action": "type"}
+{"timestamp": "2026-09-14T00:16:18.306575+00:00", "event": "step.completed", "step_id": "step-1"}
+{"timestamp": "2026-09-14T00:16:18.306772+00:00", "event": "step.started", "step_id": "step-2", "action": "click"}
+{"timestamp": "2026-09-14T00:16:18.383717+00:00", "event": "step.completed", "step_id": "step-2"}
+{"timestamp": "2026-09-14T00:16:18.383860+00:00", "event": "step.started", "step_id": "step-3", "action": "click"}
+{"timestamp": "2026-09-14T00:16:18.465795+00:00", "event": "step.completed", "step_id": "step-3"}
+{"timestamp": "2026-09-14T00:16:18.466179+00:00", "event": "step.started", "step_id": "step-4", "action": "extract"}
+{"timestamp": "2026-09-14T00:16:18.477099+00:00", "event": "step.completed", "step_id": "step-4"}
+{"timestamp": "2026-09-14T00:16:18.477405+00:00", "event": "step.started", "step_id": "step-5", "action": "extract"}
+{"timestamp": "2026-09-14T00:16:18.484767+00:00", "event": "step.completed", "step_id": "step-5"}
+{"timestamp": "2026-09-14T00:16:18.486440+00:00", "event": "replay.completed", "outputs": {"savingsBalance": 1220.0}}
+{"timestamp": "2026-09-14T00:16:18.486604+00:00", "event": "replay.finished", "result": {"run_id": "65071e08-e4d5-4385-8615-00f8f126c345", "status": "success", "capability_id": "lookup-member-savings-balance.v1", "outputs": {"savingsBalance": 1220.0}, "business_code": null, "error": null, "intervention_id": null, "started_at": "2026-09-14T00:16:17.534302Z", "completed_at": "2026-09-14T00:16:18.486434Z"}}

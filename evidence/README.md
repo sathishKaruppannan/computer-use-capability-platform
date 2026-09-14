@@ -74,6 +74,26 @@ instance is created once per replay and only closed at the very end).
 Automated test coverage: `tests/test_intervention.py` (2 tests, `@pytest.mark.e2e`) — the happy
 path above, and the negative path (resume without resolving).
 
+## Discovery-side risk classification (post-review follow-up)
+
+Real gap found while stress-testing the "risky action" requirement: `agent/discovery.py`
+hardcoded `risk=RiskLevel.READ_ONLY` on **every** step, regardless of what it actually did —
+meaning the whole approval gate built for T6 could never trigger from genuine discovery output;
+it only ever fired in tests that manually bumped a step's risk. Fixed with a deterministic,
+code-side classifier (`ClaudeDiscoveryAgent._classify_risk`) — deliberately *not* left to the
+model to self-judge, matching the project's "policy is independent of model planning" principle
+even at the point risk is first assigned. `EXTRACT`/`WAIT`/`NAVIGATE` → `read_only`;
+`TYPE`/`SELECT` → `reversible` (data entered, nothing committed yet); `CLICK` → `risky` if the
+button's accessible name/label matches a mutating-action keyword list (save, submit, update,
+delete, confirm, pay, transfer, ...), else `read_only`.
+
+Proven end-to-end against the real demo app, not just as a unit-tested function: run
+`c21fe518-9fbc-4bbc-a565-9aa2e91baaa5` classifies a click on a hypothetical "Update Phone
+Number" button as `risky` exactly the way discovery now would, and confirms `ReplayEngine`'s
+real approval gate fires for it (`intervention.created` with the correct reason/step/state,
+approved, then completes: `savingsBalance=1220.0`). `tests/test_discovery_risk_classification.py`
+covers the classifier directly (11 parametrized cases) plus this same full-chain proof.
+
 ## OpenAI GPT-5 mini as a per-call discovery fallback (post-review follow-up: closing T17)
 
 Claude remains the primary discovery provider. If a single Anthropic call errors mid-run (any

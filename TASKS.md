@@ -703,8 +703,8 @@ below.
 - **PDF requirement (§3.7, explicitly "design, not necessarily build"):** "How your artifact schema and replay engine would extend from your chosen surface to a legacy web app and/or a desktop app... How would you represent an artifact so it can be reused... across tenants... How do you detect and manage per-tenant/version drift?"
 - **Classification:** Mandatory, design only (PDF: "We don't expect you to implement multi-tenant or desktop support.")
 - **Responsible module:** `REPORT.md` §4 ("Heterogeneity & multi-tenant"), `models.py` (`ApplicationBinding`, tenant overrides)
-- **Status:** Complete — REPORT.md §4 addresses `SurfaceAdapter` as the seam, vendor/product/version binding, tenant overrides, fingerprinting for compatible-variant selection, and failing closed on drift. Since T18's closure, this narrative is also backed by code, not just design: `ReplayEngine` genuinely depends only on `SurfaceAdapter`.
-- **Gap to close:** None.
+- **Status:** Complete — REPORT.md §4 addresses `SurfaceAdapter` as the seam, vendor/product/version binding, tenant overrides, fingerprinting for compatible-variant selection, and failing closed on drift. Since T18's closure, this narrative is also backed by code, not just design: `ReplayEngine` genuinely depends only on `SurfaceAdapter`. **Post-review follow-up (user-requested):** expanded §4 to concretely answer four specific questions that were previously only gestured at in one dense paragraph — per-tenant URL resolution (`tenant_overrides[tenant_id].base_url`, resolved once before `authorize_url`, tenant-aware allowlist), the fingerprint procedure for product/version validation (named signals + a fail-closed behavior on no match, not just "a fingerprint"), the per-tenant override boundary (locator/route swap only, keyed by stable step id; anything larger becomes a new artifact version), and an explicit statement that authentication is deliberately undesigned here (not silently absent — `ErrorCategory.AUTH` classifies failures, but no login-flow/credential-strategy design exists), pointing at what a real version would need (a separate per-auth-mode "login capability").
+- **Gap to close:** None. Still design-only by choice — the user explicitly picked the design-doc-only option over building tenant_overrides resolution into `replay.py`, since the PDF doesn't require it and doing so would be scope the PDF's own anti-goal (T16) warns against without a concrete need.
 - **Validation command:** Manual read of `REPORT.md` §4.
 - **Evidence required:** REPORT.md §4 text (present).
 
@@ -899,6 +899,15 @@ below.
 - **Validation command:** `grep -rn "CapabilityRegistry(" src/ --include="*.py" | grep -v "capabilities/registry.py"` (expect no matches, confirming it's still not wired — this is a documentation task, not a code task)
 - **Evidence required:** Grep output above; the disclosure paragraphs in both docs.
 
+### T34 — Discovery never classified a step's risk, so the T6 approval gate could never fire for real
+- **Requirement source:** PDF §3.4 (see T6) — found while stress-testing that requirement directly with the user, not during a scheduled phase. The gate itself (T6) was real and tested, but only ever exercised by tests that manually set `step.risk`; nothing traced whether genuine discovery output could ever produce anything but `read_only`.
+- **Classification:** Bug (a real requirement was only half-wired: the *handling* of risk existed, the *classification* of it didn't)
+- **Responsible module:** `src/capability_platform/agent/discovery.py`
+- **Status:** Complete (fixed) — `ClaudeDiscoveryAgent._classify_risk(action, target)` is a deterministic, code-side classifier, deliberately not left to the model to self-report (consistent with "policy is independent of model planning" applying even at the point risk is first assigned, not just when it's enforced): `extract`/`wait`/`navigate` → `read_only`; `type`/`select` → `reversible`; `click` → `risky` if the target's accessible name/label matches a mutating-action keyword list (save/submit/update/delete/confirm/pay/transfer/...), else `read_only`. Replaces the previous hardcoded `risk=RiskLevel.READ_ONLY` on every step.
+- **Gap to close:** None remaining. Known limitation, disclosed: the keyword list is a heuristic, not exhaustive — a mutating button with an unusual label (e.g. "Go") would still be misclassified as safe. Good enough to close the loop; not a substitute for a human reviewing a newly discovered artifact before approving its lifecycle (T29).
+- **Validation command:** `uv run pytest -q tests/test_discovery_risk_classification.py`
+- **Evidence required:** `tests/test_discovery_risk_classification.py` (12 tests: 11 classifier cases + one full-chain proof); real run `evidence/runs/c21fe518-9fbc-4bbc-a565-9aa2e91baaa5/` showing a discovery-style classification triggering the real approval gate end-to-end against the live demo app.
+
 ### T20 — Test/lint baseline (process check per assessment instructions)
 - **Requirement source:** Assessment instructions, step 12.
 - **Classification:** Process
@@ -914,7 +923,7 @@ below.
 
 | Status | Count | IDs |
 |---|---|---|
-| Complete | 32 | T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33 |
+| Complete | 33 | T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34 |
 | Flag (not code-completable) | 1 | T16 (advisory — see entry; underlying concern now mitigated) |
 | Missing | 0 | — |
 | Unverified | 0 | — |

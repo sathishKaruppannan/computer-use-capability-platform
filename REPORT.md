@@ -86,12 +86,49 @@ XPath through the same `Locator` model; desktop can map role/name/value to UI Au
 APIs behind a new `SurfaceAdapter` implementation, with screenshot coordinates as the last
 fallback — no change to `ReplayEngine` or the error contract required.
 
-Artifacts bind to vendor/product and supported application versions, not directly to one tenant.
-Tenants inherit a vendor-base artifact and may supply narrow locator/route overrides. On startup or
-deployment, a fingerprint (title, landmarks, version text, and selected structural hashes) selects
-the compatible variant. Canary replay and locator telemetry detect drift. Overrides that diverge
-substantially become a new version rather than accumulating unsafe conditional logic. This supports
-reuse across institutions while failing closed when compatibility is uncertain.
+Artifacts bind to vendor/product and supported application versions, not directly to one tenant,
+so the same recorded flow is reused across every institution running that product rather than
+re-recorded per tenant. Four concrete questions this needs to answer, and how:
+
+**Per-tenant URL.** `ApplicationBinding.base_url` is the vendor-reference URL used during
+discovery. Each tenant is registered once with a `tenant_id` and its real hostname, stored in
+`tenant_overrides[tenant_id].base_url`. A replay invocation always carries an explicit
+`tenant_id` (threaded through the REST/MCP/CLI call, not inferred); the effective URL is
+`tenant_overrides.get(tenant_id, {}).get("base_url", application.base_url)`, resolved once at
+the top of the run before `PolicyEngine.authorize_url` runs. The allowlist is tenant-aware too —
+each tenant's real hostname must be explicitly present in policy config; there is no wildcard
+"any tenant subdomain" rule, so onboarding a tenant is an explicit, reviewable policy change,
+not an implicit one.
+
+**Product/version validation (the fingerprint).** Before trusting a tenant's binding, compare a
+small fingerprint of its live entry screen against the fingerprint recorded for each
+`supported_versions` variant: page `<title>`, top-level navigation landmarks and their labels, a
+version string if the app exposes one (footer/about page/meta tag), and a structural hash of the
+entry screen's accessibility-tree role/label skeleton (roles and labels, not their text values,
+so it's stable across tenants' branding/data). If the live fingerprint matches a known variant
+within a similarity threshold, replay proceeds against that variant's overrides. If it matches
+none, replay refuses to run unattended — it fails closed and raises the same escalation path as
+an unresolved recoverable condition, flagging the tenant for a fresh discovery/review pass rather
+than silently guessing.
+
+**Per-tenant screen navigation.** Steps keep a stable `id`. A tenant override is a small, additive
+patch keyed by that id — e.g. `tenant_overrides[tenant_id].steps["search"].target` supplies an
+alternate locator when a tenant's build uses a different label for an otherwise-identical
+button. Action type, order, and count stay fixed; overrides may only swap a `Target` or a route
+fragment, never insert, remove, or reorder steps. That's the deliberate boundary: a locator/route
+swap is a safe, reviewable override; anything larger (a genuinely different flow) means the
+tenant isn't running a compatible variant, and the right move is a new artifact version, not
+conditional branching accumulating inside one artifact. Canary replay and per-locator success
+telemetry catch drift between recordings, well before it would cause a silent wrong answer in
+production.
+
+**Authentication is the one piece deliberately left open, not designed here** (see Cuts) —
+`ErrorCategory.AUTH` exists so replay can *classify* an auth failure distinctly from other hard
+failures, but there's no login-flow design, credential strategy, or per-tenant auth-mode
+selection (SSO/basic/session-cookie/API key) in this artifact model. A real version would need a
+separate, versioned "login capability" per auth mode that a tenant's binding references as a
+precondition, with its own stricter redaction rules — credentials must never enter an artifact
+or an evidence log — but that's a distinct piece of design this project doesn't attempt.
 
 ## 5. Escalation & handoff
 
