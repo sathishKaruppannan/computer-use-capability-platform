@@ -12,6 +12,7 @@ class Redactor:
         (re.compile(r"(?i)(api[_-]?key[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_SECRET]"),
         (re.compile(r"(?i)(cookie[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_COOKIE]"),
         (re.compile(r"(?i)(session[_-]?id[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_SESSION]"),
+        (re.compile(r"(?i)(password[\"':= ]+)([^\s,\"}]+)"), r"\1[REDACTED_PASSWORD]"),
     ]
 
     @classmethod

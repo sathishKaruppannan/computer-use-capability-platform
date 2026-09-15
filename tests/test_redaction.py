@@ -22,3 +22,10 @@ def test_redacts_cookie_and_session_id():
     assert "abc-123-xyz" not in rendered
     assert "[REDACTED_COOKIE]" in rendered
     assert "[REDACTED_SESSION]" in rendered
+
+
+def test_redacts_password():
+    cleaned = Redactor.clean({"password": "hunter2secret"})
+    rendered = str(cleaned)
+    assert "hunter2secret" not in rendered
+    assert "[REDACTED_PASSWORD]" in rendered

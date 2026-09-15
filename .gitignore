@@ -7,7 +7,12 @@ __pycache__/
 artifacts/*.json
 !artifacts/.gitkeep
 !artifacts/lookup-member-savings-balance.v1.json
+data/credentials/*.json
+!data/credentials/.gitkeep
+data/tracking/*.json
+!data/tracking/.gitkeep
 test-results/
+.DS_Store
 
 
 docs/*.pdf

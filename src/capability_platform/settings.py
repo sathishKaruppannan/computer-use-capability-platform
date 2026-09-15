@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     max_discovery_steps: int = 20
     artifact_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
+    credential_dir: Path = Path("data/credentials")
+    tracking_dir: Path = Path("data/tracking")
+    system_registry_path: Path = Path("config/system_registry.json")
 
 
 settings = Settings()

@@ -1,0 +1,11 @@
+{
+  "systems": [
+    {
+      "systemIdentifier": "legacy-member-servicing-demo",
+      "baseUrl": "http://127.0.0.1:8001",
+      "vendor": "Interface Demo",
+      "product": "Legacy Member Servicing",
+      "description": "Demo legacy member servicing app used for savings balance lookups"
+    }
+  ]
+}

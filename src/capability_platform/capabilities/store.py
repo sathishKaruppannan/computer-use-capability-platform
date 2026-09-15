@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from capability_platform.models import CapabilityArtifact
+from capability_platform.models import CapabilityArtifact, ServiceType
 
 # Lifecycle states safe to hand to an agent-facing surface (REST/MCP). draft/validating are
 # pre-approval; degraded/deprecated are post-approval states an agent shouldn't newly invoke.
@@ -34,3 +34,17 @@ class ArtifactStore:
     def list_approved(self) -> list[CapabilityArtifact]:
         """Only capabilities safe to expose to an agent-facing surface (REST/MCP)."""
         return [a for a in self.list() if a.lifecycle in AGENT_EXPOSABLE_LIFECYCLES]
+
+    def find_approved_by_service_and_system(
+        self, service_type: ServiceType, system_identifier: str
+    ) -> CapabilityArtifact | None:
+        """Cross-client reuse lookup: any APPROVED/ACTIVE capability already discovered for
+        this exact (service_type, system_identifier) pair, regardless of which client
+        originally triggered discovery. None signals the caller to run discovery."""
+        for artifact in self.list_approved():
+            if (
+                artifact.service_type == service_type
+                and artifact.system_identifier == system_identifier
+            ):
+                return artifact
+        return None

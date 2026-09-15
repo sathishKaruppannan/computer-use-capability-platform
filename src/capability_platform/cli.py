@@ -2,7 +2,10 @@ import argparse
 import asyncio
 import json
 
-from capability_platform.runtime import discovery_agent, replay_engine, store
+from capability_platform.access.credentials import hash_password
+from capability_platform.access.models import ClientCredential
+from capability_platform.models import ServiceType
+from capability_platform.runtime import credential_store, discovery_agent, replay_engine, store
 from capability_platform.settings import settings
 from capability_platform.synthesis.result import GroundedSynthesizer
 
@@ -34,6 +37,17 @@ async def run(args) -> None:
                 indent=2,
             )
         )
+    elif args.command == "register-client":
+        password_hash, password_salt = hash_password(args.password)
+        credential = ClientCredential(
+            client_id=args.client_id,
+            password_hash=password_hash,
+            password_salt=password_salt,
+            authorized_service_types=[ServiceType(s) for s in args.service_type],
+            is_admin=args.admin,
+        )
+        path = credential_store().save(credential)
+        print(json.dumps({"client_id": credential.client_id, "path": str(path)}, indent=2))
 
 
 def main() -> None:
@@ -49,6 +63,11 @@ def main() -> None:
     commands.add_parser("list")
     approve = commands.add_parser("approve")
     approve.add_argument("capability")
+    register_client = commands.add_parser("register-client")
+    register_client.add_argument("--client-id", required=True)
+    register_client.add_argument("--password", required=True)
+    register_client.add_argument("--service-type", action="append", required=True)
+    register_client.add_argument("--admin", action="store_true")
     asyncio.run(run(parser.parse_args()))
 
 

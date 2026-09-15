@@ -3,12 +3,14 @@ from typing import Any
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from capability_platform.api.v1_routes import router as v1_router
 from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
 from capability_platform.intervention.manager import interventions
 from capability_platform.runtime import discovery_agent, replay_engine, store
 from capability_platform.settings import settings
 
 app = FastAPI(title="Computer-Use Capability Platform", version="0.1.0")
+app.include_router(v1_router)
 
 
 class DiscoveryRequest(BaseModel):

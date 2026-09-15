@@ -44,6 +44,20 @@ class ErrorCategory(StrEnum):
     INTERNAL = "internal"
 
 
+class ServiceType(StrEnum):
+    """The client-facing authorization scope AND cross-client reuse key (paired with
+    ApplicationBinding.system_identifier — see CapabilityArtifact) for a capability domain.
+    Deliberately a closed, admin-curated enum, not client-suppliable free text — a credential's
+    `authorized_service_types` only means something if the set of values is fixed in code.
+
+    Only add a member once `ClaudeDiscoveryAgent.discover()` is generalized to derive artifact
+    id/inputs/outputs/success-checkpoint from the request instead of its current hardcoded
+    lookup-member-savings-balance scenario (see agent/discovery.py) — an enum member with no
+    working discovery behind it would silently mislabel whatever discover() actually produces."""
+
+    MEMBER_SAVINGS_BALANCE_LOOKUP = "member_savings_balance_lookup"
+
+
 class ParameterSpec(BaseModel):
     name: str
     type: Literal["string", "integer", "number", "boolean"]
@@ -139,6 +153,8 @@ class CapabilityArtifact(BaseModel):
     discovered_by: str
     approval_required: bool = True
     tags: list[str] = Field(default_factory=list)
+    service_type: ServiceType | None = None
+    system_identifier: str | None = None
 
     @property
     def qualified_id(self) -> str:

@@ -4,7 +4,7 @@
   "maxRiskWithoutApproval": "reversible",
   "dataPolicy": {
     "persist": ["runId", "capabilityId", "stepId", "redactedInputs", "outputs"],
-    "neverPersist": ["credentials", "tokens", "fullSSN", "sessionCookies"]
+    "neverPersist": ["credentials", "tokens", "fullSSN", "sessionCookies", "password"]
   }
 }
 
