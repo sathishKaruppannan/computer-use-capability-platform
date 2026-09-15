@@ -13,28 +13,40 @@ API, and an MCP server. These surround rather than weaken the required computer-
 
 ```mermaid
 flowchart TD
-  G[Goal] --> R[Capability resolver]
-  R -->|approved match| E[Deterministic executor]
+  G["Goal + service_type + system_identifier<br/>(POST /v1/discover)"] --> R[Capability resolver]
+  R -->|"approved match for this (service_type, system_identifier)"| X[Reuse existing capability]
   R -->|no match| D[Claude discovery]
   D --> S[Surface adapter]
   D --> C[Artifact compiler]
-  C --> V[Review and register]
+  C --> N["Save as draft"]
+  N --> V["Admin review and approve<br/>(POST /v1/capabilities/{id}/approve)"]
+  X --> E[Deterministic executor]
   V --> E
   E --> P[Policy and checkpoints]
   P --> A[Structured result]
   P -->|blocked| H[Same-session handoff]
 ```
 
-**What's actually wired up today, precisely:** the diagram above describes the intended design;
-the live system is two separate, explicit entry points, not a goal-routed resolver. `discover
---goal "..."` always runs a fresh Claude discovery (it does not check for an existing capability
-first). `replay <capability-id> --input ...`, REST's `/capabilities/{id}/execute`, and MCP's
-`lookup_member_savings_balance` all require the exact capability id/name — there is no "just
-give me a goal and it finds the right capability" live entry point yet. `capabilities/registry.py`
-(the semantic embedding/reranking retrieval described above) is real, tested code
-(`tests/test_models.py::test_semantic_registry_prefers_balance_capability`), but it is not
-currently called from `discover`, `replay`, the REST app, or the MCP server — it's an
-implemented, unit-tested building block for the resolver, not the resolver itself.
+**What's actually wired up today, precisely:** `POST /v1/discover` is the live, goal-routed
+resolver — `discover_v1` (`src/capability_platform/api/v1_routes.py`) calls
+`ArtifactStore.find_approved_by_service_and_system(service_type, system_identifier)` first; a hit
+returns the existing `capability_id` with `reused_existing_capability: true` and triggers no
+Claude call, and a miss runs Claude discovery, compiles the artifact, and saves it as `draft`
+(requiring an explicit `/v1/capabilities/{id}/approve` by an admin credential before it's
+invocable). This reuse path is cross-client by design: whichever client discovered a
+`(service_type, system_identifier)` pair first, every later caller for that same pair reuses it.
+`tests/test_v1_api_e2e.py` and `tests/test_v1_api_auth.py` exercise both branches end-to-end.
+
+The plain CLI (`discover --goal "..."`) and the unauthenticated REST/MCP surfaces predate this and
+remain two separate, explicit entry points rather than going through the resolver: `discover`
+always runs a fresh Claude discovery (no reuse check), and `replay <capability-id> --input ...`,
+REST's unauthenticated `/capabilities/{id}/execute`, and MCP's `lookup_member_savings_balance`
+all require the exact capability id/name. The resolver's match key is the exact
+`(service_type, system_identifier)` pair, not free-text goal similarity — `capabilities/registry.py`
+(the semantic embedding/reranking retrieval described below) is real, tested code
+(`tests/test_models.py::test_semantic_registry_prefers_balance_capability`), but it is not called
+from `discover_v1`, the CLI, or MCP; it remains an implemented, unit-tested building block, not
+part of any live resolution path.
 
 The full design and trade-offs are in [REPORT.md](REPORT.md).
 
@@ -123,6 +135,57 @@ curl -X POST http://127.0.0.1:8000/capabilities/lookup-member-savings-balance.v1
 The execute response is the identical `ExecutionResult` JSON the CLI prints (`run_id`, `status`,
 `capability_id`, `outputs`, `business_code`, `error`, `intervention_id`, `started_at`,
 `completed_at`) — REST doesn't reshape or duplicate it.
+
+### REST: authenticated `/v1` surface
+
+The routes above are unauthenticated and remain for local/demo convenience. Any real caller goes
+through `/v1` instead: every route requires HTTP Basic auth against a registered
+`ClientCredential`, `discover`/`execute` also check the credential is authorized for the
+capability's `service_type` (`require_service_type` in `src/capability_platform/api/auth.py`),
+and every call is recorded as an `InquiryRecord` (`client_id`, `client_inquiry_id`,
+`service_type`, `system_identifier`, reuse/execution status) via `InquiryTracker` — see
+`src/capability_platform/api/v1_routes.py`.
+
+Register a client first (password is hashed with PBKDF2 before it touches disk — see
+`access/credentials.py`):
+
+```bash
+uv run capability-platform register-client --client-id demo-client --password secret123 \
+  --service-type member_savings_balance_lookup --admin
+```
+
+Then drive the same discover → approve → execute flow the CLI and `test_v1_api_e2e.py` exercise,
+now over REST with credentials and request tracking:
+
+```bash
+make platform
+
+# Discover (or reuse, if this service_type + system_identifier pair was already discovered by
+# any client) a capability against a system pre-approved in config/system_registry.json.
+curl -X POST http://127.0.0.1:8000/v1/discover -u demo-client:secret123 \
+  -H 'content-type: application/json' -d '{
+    "service_type": "member_savings_balance_lookup",
+    "system_identifier": "legacy-member-servicing-demo",
+    "client_inquiry_id": "client-req-001",
+    "goal": "Find member 10001 and return savings balance"
+  }'
+# -> {"capability_id": "...", "inquiry_id": "...", "reused_existing_capability": false, "lifecycle": "draft"}
+
+# Approve (admin credential only — draft artifacts are not invocable by anyone until this).
+curl -X POST http://127.0.0.1:8000/v1/capabilities/<capability_id>/approve -u demo-client:secret123
+
+# Execute — same ExecutionResult shape as the unauthenticated route, plus an InquiryRecord logged
+# under this client_id.
+curl -X POST http://127.0.0.1:8000/v1/capabilities/<capability_id>/execute -u demo-client:secret123 \
+  -H 'content-type: application/json' -d '{
+    "client_inquiry_id": "client-req-002",
+    "inputs": {"memberId": "10002"}
+  }'
+```
+
+Omitting `-u`, using wrong credentials, or using a credential not authorized for the capability's
+`service_type` all fail closed (`401`/`403`) before any replay runs — see
+`tests/test_v1_api_auth.py`.
 
 ### MCP
 
