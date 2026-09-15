@@ -16,6 +16,9 @@ MEMBERS = {
 
 INTERSTITIAL_MEMBER_ID = "10003"
 TRANSIENT_LOAD_MEMBER_ID = "10004"
+# 10005 always simulates an expired session on search, for exercising a distinct hard-failure
+# category (auth) instead of collapsing into the generic checkpoint bucket.
+SESSION_EXPIRED_MEMBER_ID = "10005"
 
 
 def page(body: str) -> HTMLResponse:
@@ -37,6 +40,8 @@ def home():
 
 @app.post("/search", response_class=HTMLResponse)
 def search(member_id: str = Form(...)):
+    if member_id == SESSION_EXPIRED_MEMBER_ID:
+        return page("""<div class="error" role="alert">Session expired. Please sign in again.</div>""")
     member = MEMBERS.get(member_id)
     if not member:
         return page(f"""<h1>Member Search</h1><div class="error" role="alert">Member not found</div>

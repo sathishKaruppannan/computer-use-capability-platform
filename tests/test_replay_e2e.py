@@ -51,7 +51,7 @@ async def test_replay_structured_failure_on_broken_locator(tmp_path):
     )
     assert result.status == RunStatus.FAILURE
     assert result.error is not None
-    assert result.error.category == ErrorCategory.CHECKPOINT
+    assert result.error.category == ErrorCategory.TARGET_NOT_FOUND
     assert result.error.step_id == first_step_id
     assert result.error.evidence_path is not None
     assert Path(result.error.evidence_path).exists()

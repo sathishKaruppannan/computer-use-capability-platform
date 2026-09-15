@@ -74,6 +74,33 @@ instance is created once per replay and only closed at the very end).
 Automated test coverage: `tests/test_intervention.py` (2 tests, `@pytest.mark.e2e`) — the happy
 path above, and the negative path (resume without resolving).
 
+## Precise error categories: auth and timeout, no longer collapsed into "checkpoint" (post-review follow-up)
+
+Real gap found by direct inspection (`grep -n "ErrorCategory\." computer_use/replay.py`), the
+same class of gap as the earlier dead `RECOVERABLE` enum member: `AUTH`, `TARGET_NOT_FOUND`,
+`TIMEOUT`, and `APPLICATION` were all declared in the taxonomy but **never assigned anywhere**.
+A declared error rule with any category other than `business` (e.g. a session-expired state
+classified `auth`) silently collapsed into the generic `checkpoint_failed` bucket the moment it
+fell through to a hard failure — its own category was discarded. Fixed two ways:
+
+1. **Declared rules now keep their own category.** `StepFailure` carries `category`/`code`
+   through; a matched rule that isn't business/retry/pause raises with its *own* declared
+   category instead of a hardcoded `checkpoint_failed`.
+2. **Driver-level timeouts get their own category too**, without reintroducing a Playwright
+   dependency into `replay.py` — `PlaywrightSurface` (the adapter, per T18) translates
+   Playwright's own `TimeoutError` into a domain-level `SurfaceTimeout`, which `ReplayEngine`
+   catches and classifies as `ErrorCategory.TIMEOUT`. A `LookupError` (locator genuinely not
+   found) is now classified `target_not_found` rather than the generic `checkpoint_failed` too
+   — a real, intentional behavior change to an existing test (`test_replay_structured_failure_on_broken_locator`),
+   confirmed to be a *more* accurate classification, not a regression.
+
+Real run: `evidence/runs/853ab821-388a-4ba6-83e4-8b762d5508ad/` — a simulated expired session
+(member `10005` in `demo_app.py`, added for this purpose) with a declared `ErrorRule(category=
+AUTH, code="SESSION_EXPIRED")` correctly fails as `category=auth`, not `checkpoint_failed`.
+`tests/test_replay_error_categories.py` covers both: the real AUTH scenario against the live
+demo app, and a deterministic TIMEOUT classification test using a fake `SurfaceAdapter` whose
+`click()` raises `SurfaceTimeout` (no flaky real browser timing needed to prove the mapping).
+
 ## Discovery-side risk classification (post-review follow-up)
 
 Real gap found while stress-testing the "risky action" requirement: `agent/discovery.py`

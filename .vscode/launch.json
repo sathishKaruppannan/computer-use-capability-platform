@@ -1,0 +1,127 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug: surface adapter test",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "tests/test_surface_adapter.py::test_replay_engine_works_with_a_non_playwright_surface_adapter",
+        "-v",
+        "-s"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: current test file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: full unit suite (not e2e)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-m", "not e2e", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: demo app (port 8001)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["demo_app.app:app", "--port", "8001", "--reload"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: platform API (port 8000)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["capability_platform.api.app:app", "--port", "8000", "--reload"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: CLI replay",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "capability_platform.cli",
+      "args": [
+        "replay",
+        "lookup-member-savings-balance.v1",
+        "--input",
+        "memberId=10002"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: CLI discover",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "capability_platform.cli",
+      "args": [
+        "discover",
+        "--goal",
+        "Find member 10001 and return savings balance"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: MCP server startup (tool registration)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "capability_platform.mcp.server",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: MCP tool invocation (direct call)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/private/tmp/claude-501/-Users-sathishkumarkaruppannan-Downloads-computer-use-capability-platform/80b86d7b-a03a-46fc-8548-c27816e04f6d/scratchpad/debug_mcp_tool_call.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: MCP e2e test (real client + subprocess server)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_mcp_server.py", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}",
+      "subProcess": true
+    },
+    {
+      "name": "Debug: REST API test",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_rest_api_e2e.py", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

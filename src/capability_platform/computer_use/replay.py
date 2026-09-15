@@ -4,7 +4,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from capability_platform.computer_use.surface import PlaywrightSurface, SurfaceAdapter
+from capability_platform.computer_use.surface import (
+    PlaywrightSurface,
+    SurfaceAdapter,
+    SurfaceTimeout,
+)
 from capability_platform.intervention.manager import interventions
 from capability_platform.models import (
     ActionType,
@@ -281,7 +285,19 @@ class ReplayEngine:
                                 )
                             evidence.event("resume.validated", step_id=step.id)
                             continue
-                        raise RuntimeError(error_rule.message)
+                        # A declared rule that isn't business/retry/pause is a deliberate hard
+                        # stop — preserve its own category/code (e.g. auth, target_not_found)
+                        # instead of collapsing to the generic checkpoint bucket below.
+                        declared_screenshot = await evidence.screenshot(
+                            await surface.screenshot(), f"failure-{step.id}"
+                        )
+                        raise StepFailure(
+                            step.id,
+                            error_rule.message,
+                            declared_screenshot,
+                            category=error_rule.category,
+                            code=error_rule.code,
+                        )
                     if step.checkpoint and not await self._checkpoint(
                         surface, step.checkpoint, inputs
                     ):
@@ -290,6 +306,20 @@ class ReplayEngine:
 
                 except PolicyViolation:
                     raise
+                except StepFailure:
+                    raise
+                except SurfaceTimeout as exc:
+                    screenshot = await evidence.screenshot(await surface.screenshot(), f"failure-{step.id}")
+                    raise StepFailure(
+                        step.id, str(exc), screenshot,
+                        category=ErrorCategory.TIMEOUT, code="ACTION_TIMEOUT",
+                    ) from exc
+                except LookupError as exc:
+                    screenshot = await evidence.screenshot(await surface.screenshot(), f"failure-{step.id}")
+                    raise StepFailure(
+                        step.id, str(exc), screenshot,
+                        category=ErrorCategory.TARGET_NOT_FOUND, code="TARGET_NOT_FOUND",
+                    ) from exc
                 except Exception as exc:
                     screenshot = await evidence.screenshot(await surface.screenshot(), f"failure-{step.id}")
                     raise StepFailure(step.id, str(exc), screenshot) from exc
@@ -310,8 +340,8 @@ class ReplayEngine:
             )
         except StepFailure as exc:
             result.error = RunError(
-                category=ErrorCategory.CHECKPOINT,
-                code="REPLAY_STEP_FAILED",
+                category=exc.category,
+                code=exc.code,
                 message=exc.message,
                 step_id=exc.step_id,
                 evidence_path=exc.screenshot,
@@ -328,8 +358,17 @@ class ReplayEngine:
 
 
 class StepFailure(RuntimeError):
-    def __init__(self, step_id: str, message: str, screenshot: str) -> None:
+    def __init__(
+        self,
+        step_id: str,
+        message: str,
+        screenshot: str | None,
+        category: ErrorCategory = ErrorCategory.CHECKPOINT,
+        code: str = "REPLAY_STEP_FAILED",
+    ) -> None:
         self.step_id = step_id
         self.message = message
         self.screenshot = screenshot
+        self.category = category
+        self.code = code
         super().__init__(message)

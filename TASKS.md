@@ -908,6 +908,15 @@ below.
 - **Validation command:** `uv run pytest -q tests/test_discovery_risk_classification.py`
 - **Evidence required:** `tests/test_discovery_risk_classification.py` (12 tests: 11 classifier cases + one full-chain proof); real run `evidence/runs/c21fe518-9fbc-4bbc-a565-9aa2e91baaa5/` showing a discovery-style classification triggering the real approval gate end-to-end against the live demo app.
 
+### T35 — `AUTH`/`TARGET_NOT_FOUND`/`TIMEOUT` error categories were declared but never assigned
+- **Requirement source:** PDF §1 (verbatim): "the interesting failures aren't layout drift — they're runtime conditions: a validation error, a 'record not found' result, a permission denial, an unexpected dialog, a session timeout, or a slow/failed load." Found by walking through this exact list with the user and grepping `replay.py` for every `ErrorCategory.` assignment.
+- **Classification:** Bug (taxonomy existed in the schema, was silently incomplete in the executor)
+- **Responsible module:** `src/capability_platform/computer_use/replay.py`, `src/capability_platform/computer_use/surface.py`
+- **Status:** Complete (fixed) — two distinct issues, fixed together: (1) a declared `ErrorRule` whose category wasn't `business` (e.g. `auth` for a session-expiry/permission-denial rule) fell through to a hardcoded `checkpoint_failed` in the final `except StepFailure` handler, discarding its own category — `StepFailure` now carries `category`/`code` through, and the declared-rule fallthrough raises with its own values. (2) A driver-level action timeout had no distinct classification at all — `PlaywrightSurface` now translates Playwright's own `TimeoutError` into a domain-level `SurfaceTimeout` (defined in `surface.py`, not imported into `replay.py` — keeps T18's adapter-agnostic boundary intact), which `ReplayEngine` catches and maps to `ErrorCategory.TIMEOUT`. A `LookupError` (locator genuinely unresolvable) is now `target_not_found` instead of the generic `checkpoint_failed` too — a deliberate, more accurate reclassification of an existing test, not a regression.
+- **Gap to close:** `APPLICATION` remains declared but unassigned — no current scenario distinguishes "the app itself errored" from other hard failures. Low priority: the generic catch-all already produces a debuggable `internal`/`checkpoint_failed` failure with a screenshot; `APPLICATION` would only add value once a concrete "app returned a 500-style error page" scenario exists to detect.
+- **Validation command:** `uv run pytest -q tests/test_replay_error_categories.py`; `grep -n "ErrorCategory\." src/capability_platform/computer_use/replay.py`
+- **Evidence required:** `tests/test_replay_error_categories.py` (2 tests: real AUTH scenario, deterministic TIMEOUT classification); real run `evidence/runs/853ab821-388a-4ba6-83e4-8b762d5508ad/` (`category=auth`, not `checkpoint_failed`).
+
 ### T20 — Test/lint baseline (process check per assessment instructions)
 - **Requirement source:** Assessment instructions, step 12.
 - **Classification:** Process
@@ -923,7 +932,7 @@ below.
 
 | Status | Count | IDs |
 |---|---|---|
-| Complete | 33 | T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34 |
+| Complete | 34 | T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15, T17, T18, T19, T20, T21, T22, T23, T24, T25, T26, T27, T28, T29, T30, T31, T32, T33, T34, T35 |
 | Flag (not code-completable) | 1 | T16 (advisory — see entry; underlying concern now mitigated) |
 | Missing | 0 | — |
 | Unverified | 0 | — |

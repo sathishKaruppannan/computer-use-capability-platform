@@ -3,8 +3,15 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import TimeoutError as _DriverTimeout
 
 from capability_platform.models import Locator, Target
+
+
+class SurfaceTimeout(Exception):
+    """Raised by a SurfaceAdapter when an action doesn't complete within its own timeout — the
+    adapter-agnostic signal ReplayEngine catches to classify a result as ErrorCategory.TIMEOUT,
+    without replay.py ever needing to know which concrete driver raised it."""
 
 
 class SurfaceAdapter(Protocol):
@@ -56,7 +63,10 @@ class PlaywrightSurface:
 
     async def navigate(self, url: str) -> None:
         assert self.page
-        await self.page.goto(url)
+        try:
+            await self.page.goto(url)
+        except _DriverTimeout as exc:
+            raise SurfaceTimeout(str(exc)) from exc
 
     async def wait(self, ms: int) -> None:
         assert self.page
@@ -95,10 +105,18 @@ class PlaywrightSurface:
         raise LookupError("; ".join(errors))
 
     async def click(self, target: Target) -> None:
-        await (await self.resolve(target)).click()
+        located = await self.resolve(target)
+        try:
+            await located.click()
+        except _DriverTimeout as exc:
+            raise SurfaceTimeout(str(exc)) from exc
 
     async def type(self, target: Target, value: str) -> None:
-        await (await self.resolve(target)).fill(value)
+        located = await self.resolve(target)
+        try:
+            await located.fill(value)
+        except _DriverTimeout as exc:
+            raise SurfaceTimeout(str(exc)) from exc
 
     async def extract(self, target: Target) -> str:
         return (await (await self.resolve(target)).inner_text()).strip()
