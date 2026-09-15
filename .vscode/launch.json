@@ -97,7 +97,36 @@
       "name": "Debug: MCP tool invocation (direct call)",
       "type": "debugpy",
       "request": "launch",
-      "program": "/private/tmp/claude-501/-Users-sathishkumarkaruppannan-Downloads-computer-use-capability-platform/80b86d7b-a03a-46fc-8548-c27816e04f6d/scratchpad/debug_mcp_tool_call.py",
+      "program": "${workspaceFolder}/scripts/debug/mcp_tool_invocation.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: v1 discover flow (resolver reuse + Claude discovery + approve + execute)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/debug/discover_v1_flow.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: v1 API auth/authz tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_v1_api_auth.py", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: v1 API e2e (real discovery, real replay)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_v1_api_e2e.py", "-v", "-s"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "cwd": "${workspaceFolder}"

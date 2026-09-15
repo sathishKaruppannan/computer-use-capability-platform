@@ -381,6 +381,66 @@ make demo          # terminal 1
 make test-e2e       # terminal 2, equivalent to: uv run pytest -q -m e2e
 ```
 
+## Debugging
+
+`.vscode/launch.json` has a debugpy config per moving part (`justMyCode: false` throughout, so
+you can step into library code — Playwright, FastAPI, the Anthropic SDK — too). The ones most
+relevant to tracing a discovery run:
+
+- **"Debug: v1 discover flow (resolver reuse + Claude discovery + approve + execute)"** runs
+  `scripts/debug/discover_v1_flow.py`, which drives the full authenticated `/v1` client lifecycle
+  in one process — the same sequence a real client's REST integration would make:
+  1. `POST /v1/discover` — the resolver calls `ArtifactStore.find_approved_by_service_and_system`
+     first; on a miss (the common case for a first-time `(service_type, system_identifier)` pair)
+     it falls through to `ClaudeDiscoveryAgent.discover`, which drives a real, visible (non-
+     headless) Chromium against the demo app on port 8001.
+  2. `POST /v1/capabilities/{id}/approve` — the resulting `draft` artifact isn't invocable until
+     an admin credential approves it.
+  3. `POST /v1/capabilities/{id}/execute` — deterministic Playwright replay, no LLM in this path.
+  4. `POST /v1/discover` again with the same pair — now `reused_existing_capability: true`, and
+     `ClaudeDiscoveryAgent.discover` is never called.
+
+  It uses a throwaway temp directory for `artifact_dir`/`credential_dir`/`tracking_dir`
+  (mirroring `tests/test_v1_api_e2e.py`), so it never touches the real `artifacts/` or `data/`
+  under the repo root and is safe to re-run. It **does** make a genuine, billed Claude API call
+  in step 1 — this isn't mocked, because the discovery decision loop is exactly what you're
+  debugging. Start `make demo` on port 8001 first, and have `ANTHROPIC_API_KEY` set (`.env`).
+
+  Useful breakpoints: `v1_routes.discover_v1` (the resolver entry point),
+  `ArtifactStore.find_approved_by_service_and_system` (the reuse check itself — step over it on
+  the first call to watch it return `None`, then hit it again on the fourth call and watch it
+  return the approved artifact), `ClaudeDiscoveryAgent._decide` (one breakpoint hit per
+  observe-decide-act step — inspect `response.content` for the model's `browser_action` tool
+  call each time), and `v1_routes.execute_v1` (the `service_type` re-check before replay).
+
+- **"Debug: v1 API auth/authz tests"** and **"Debug: v1 API e2e (real discovery, real replay)"**
+  step through `tests/test_v1_api_auth.py` (401/403 paths — no Claude/browser needed) and
+  `tests/test_v1_api_e2e.py` (the same real discover → approve → execute round trip as the
+  script above, as an assertion-driven test instead of a printed trace).
+
+- **"Debug: platform API (port 8000)"** / **"Debug: demo app (port 8001)"** launch the actual
+  servers under the debugger with `--reload`, for when you'd rather drive requests by hand (curl,
+  or the [REST: authenticated `/v1` surface](#rest-authenticated-v1-surface) examples above) and
+  hit breakpoints as they arrive, instead of running a scripted sequence.
+
+- **"Debug: MCP tool invocation (direct call)"** runs `scripts/debug/mcp_tool_invocation.py`,
+  which calls the generated MCP tool function directly — bypassing the stdio/JSON-RPC
+  transport — so it can be single-stepped without a second connected MCP client process.
+
+### How a client actually drives the REST flow
+
+Concretely, an integrating client's REST call sequence is: **register once** (out-of-band, via
+`register-client` — see [REST: authenticated `/v1` surface](#rest-authenticated-v1-surface)),
+then for every inquiry, **discover** with its own `client_inquiry_id` plus the `service_type` and
+`system_identifier` it wants (cheap and instant if any client already discovered that exact pair
+and it's approved; otherwise a real discovery run happens on the client's behalf), then **execute**
+using the returned `capability_id` once it's `approved`. A client never needs to know or supply
+step-by-step browser instructions — `service_type` + `system_identifier` + a natural-language
+`goal` is the entire contract on the way in, and a typed `ExecutionResult` is the entire contract
+on the way out. `approve` is deliberately not part of a client's normal path — it's an
+admin-only gate (`credential.is_admin`), so a `draft` artifact a client's own discovery call
+produced still needs separate sign-off before anyone, including that same client, can execute it.
+
 ## Repository map
 
 | Path | Responsibility |
