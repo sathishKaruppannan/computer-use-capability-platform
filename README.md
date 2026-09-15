@@ -13,7 +13,13 @@ API, and an MCP server. These surround rather than weaken the required computer-
 
 ```mermaid
 flowchart TD
-  G["Goal + service_type + system_identifier<br/>(POST /v1/discover)"] --> R[Capability resolver]
+  CLID["Option: CLI<br/>discover --goal ..."] --> D
+  RESTD["Option: REST<br/>POST /v1/discover"] --> G
+  CLIR["Option: CLI<br/>replay / approve"] --> E
+  RESTE["Option: REST<br/>/capabilities/{id}/execute<br/>/v1/.../execute"] --> E
+  MCPL["Option: MCP<br/>lookup_member_savings_balance"] --> E
+
+  G["Goal + service_type + system_identifier"] --> R[Capability resolver]
   R -->|"approved match for this (service_type, system_identifier)"| X[Reuse existing capability]
   R -->|no match| D[Claude discovery]
   D --> S[Surface adapter]
@@ -26,6 +32,11 @@ flowchart TD
   P --> A[Structured result]
   P -->|blocked| H[Same-session handoff]
 ```
+
+CLI, REST, and MCP are three interface *options* onto the same core, not three separate
+implementations — `list_capabilities` (REST `/capabilities`, MCP) and every execute/replay path
+converge on the same `ArtifactStore`/`ReplayEngine`, and only `POST /v1/discover` currently passes
+through the resolver's reuse check before falling back to Claude discovery (see the note below).
 
 **What's actually wired up today, precisely:** `POST /v1/discover` is the live, goal-routed
 resolver — `discover_v1` (`src/capability_platform/api/v1_routes.py`) calls
@@ -128,13 +139,53 @@ uv run capability-platform approve lookup-member-savings-balance.v1
 ```bash
 make platform
 curl http://127.0.0.1:8000/capabilities
+```
+
+```json
+[
+  {
+    "id": "lookup-member-savings-balance.v1",
+    "name": "Lookup member savings balance",
+    "inputs": [
+      {
+        "name": "memberId",
+        "type": "string",
+        "description": "Demo member identifier",
+        "required": true,
+        "sensitive": false,
+        "pattern": "^\\d{5}$"
+      }
+    ],
+    "outputs": [
+      { "name": "savingsBalance", "type": "number", "description": "Current savings balance", "sensitive": false }
+    ]
+  }
+]
+```
+
+```bash
 curl -X POST http://127.0.0.1:8000/capabilities/lookup-member-savings-balance.v1/execute \
   -H 'content-type: application/json' -d '{"inputs":{"memberId":"10002"}}'
 ```
 
-The execute response is the identical `ExecutionResult` JSON the CLI prints (`run_id`, `status`,
-`capability_id`, `outputs`, `business_code`, `error`, `intervention_id`, `started_at`,
-`completed_at`) — REST doesn't reshape or duplicate it.
+```json
+{
+  "run_id": "0db50b6f-d52b-4e72-842b-5b7887be993b",
+  "status": "success",
+  "capability_id": "lookup-member-savings-balance.v1",
+  "outputs": { "savingsBalance": 1220.0 },
+  "business_code": null,
+  "error": null,
+  "intervention_id": null,
+  "started_at": "2026-09-15T22:02:03.031012Z",
+  "completed_at": "2026-09-15T22:02:04.410496Z"
+}
+```
+
+That's the identical `ExecutionResult` shape the CLI prints (`run_id`, `status`, `capability_id`,
+`outputs`, `business_code`, `error`, `intervention_id`, `started_at`, `completed_at`) — REST
+doesn't reshape or duplicate it. Both responses above are real output, captured from a local run
+against `artifacts/lookup-member-savings-balance.v1.json` and the demo app on port 8001.
 
 ### REST: authenticated `/v1` surface
 
@@ -169,23 +220,79 @@ curl -X POST http://127.0.0.1:8000/v1/discover -u demo-client:secret123 \
     "client_inquiry_id": "client-req-001",
     "goal": "Find member 10001 and return savings balance"
   }'
-# -> {"capability_id": "...", "inquiry_id": "...", "reused_existing_capability": false, "lifecycle": "draft"}
+```
 
+```json
+{
+  "capability_id": "lookup-member-savings-balance.v1",
+  "inquiry_id": "b2b7a9c1-2f2b-4e9b-8b0b-6a6b9f9e6a11",
+  "reused_existing_capability": false,
+  "lifecycle": "draft"
+}
+```
+
+`reused_existing_capability: false` means no prior *approved* capability matched this
+`(service_type, system_identifier)` pair, so Claude discovery ran and produced a new `draft`
+artifact — it isn't invocable yet. A later `/v1/discover` call with the same pair, once approved,
+returns the same `capability_id` with `reused_existing_capability: true` and triggers no Claude
+call at all, per `find_approved_by_service_and_system` (`capabilities/store.py`).
+
+```bash
 # Approve (admin credential only — draft artifacts are not invocable by anyone until this).
-curl -X POST http://127.0.0.1:8000/v1/capabilities/<capability_id>/approve -u demo-client:secret123
+curl -X POST http://127.0.0.1:8000/v1/capabilities/lookup-member-savings-balance.v1/approve \
+  -u demo-client:secret123
+```
 
+```json
+{ "capability_id": "lookup-member-savings-balance.v1", "lifecycle": "approved" }
+```
+
+```bash
 # Execute — same ExecutionResult shape as the unauthenticated route, plus an InquiryRecord logged
 # under this client_id.
-curl -X POST http://127.0.0.1:8000/v1/capabilities/<capability_id>/execute -u demo-client:secret123 \
-  -H 'content-type: application/json' -d '{
+curl -X POST http://127.0.0.1:8000/v1/capabilities/lookup-member-savings-balance.v1/execute \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
     "client_inquiry_id": "client-req-002",
     "inputs": {"memberId": "10002"}
   }'
 ```
 
+```json
+{
+  "run_id": "47eec817-3c09-4c15-914a-be0a5bd93286",
+  "status": "success",
+  "capability_id": "lookup-member-savings-balance.v1",
+  "outputs": { "savingsBalance": 1220.0 },
+  "business_code": null,
+  "error": null,
+  "intervention_id": null,
+  "started_at": "2026-09-15T22:01:25.979696Z",
+  "completed_at": "2026-09-15T22:01:27.574779Z"
+}
+```
+
+And the recoverable business outcome for a member that doesn't exist (`memberId: "99999"`),
+captured from the same run — `status` distinguishes this from a hard failure, per
+[Architecture rules #6](CLAUDE.md):
+
+```json
+{
+  "run_id": "e744e718-d5d6-4c63-a640-50958996649b",
+  "status": "business_outcome",
+  "capability_id": "lookup-member-savings-balance.v1",
+  "outputs": {},
+  "business_code": "MEMBER_NOT_FOUND",
+  "error": null,
+  "intervention_id": null,
+  "started_at": "2026-09-15T22:01:27.711077Z",
+  "completed_at": "2026-09-15T22:01:28.472516Z"
+}
+```
+
 Omitting `-u`, using wrong credentials, or using a credential not authorized for the capability's
 `service_type` all fail closed (`401`/`403`) before any replay runs — see
-`tests/test_v1_api_auth.py`.
+`tests/test_v1_api_auth.py`. The execute responses above are real output, captured from a local
+run with `demo-client` (registered exactly as shown above) against the same approved artifact.
 
 ### MCP
 
