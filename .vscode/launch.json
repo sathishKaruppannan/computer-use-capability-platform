@@ -112,6 +112,24 @@
       "cwd": "${workspaceFolder}"
     },
     {
+      "name": "Debug: create pause-demo capability (human handoff)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/debug/create_pause_demo_capability.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: create approval-demo capability (risky-step approval)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/debug/create_approval_demo_capability.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
       "name": "Debug: v1 API auth/authz tests",
       "type": "debugpy",
       "request": "launch",
@@ -148,6 +166,26 @@
       "request": "launch",
       "module": "pytest",
       "args": ["tests/test_rest_api_e2e.py", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: intervention/handoff test (pause + resume)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_intervention.py", "-v", "-s"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Debug: risky-action approval test",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["tests/test_approval.py", "-v", "-s"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "cwd": "${workspaceFolder}"
