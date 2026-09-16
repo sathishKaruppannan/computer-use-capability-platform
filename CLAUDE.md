@@ -28,3 +28,14 @@ Read `README.md` and `REPORT.md` first. Preserve the core invariant:
 When adding a capability source, normalize it into `CapabilityDescriptor` and register an
 executor adapter. Do not add source-specific branches to the planner.
 
+## Docs
+
+- `docs/REST_API_TEST_SCENARIOS.md` — full curl request/response reference for the REST surface:
+  valid/invalid auth, authorized/unauthorized clients, an existing capability invoked by id, a
+  new capability discovered from a goal, and the auth/authz/not-found failure modes. Nearly every
+  response in it is real captured output from a live local run, not hand-written.
+- `docs/ARCHITECTURE_WALKTHROUGH.md` — demo narration guide: walks the architecture diagram box
+  by box, mapping each one to its requirement (CLAUDE.md architecture rules) and its actual
+  implementation (file/function). Also covers the CLI/REST/MCP client-flow comparison (when a
+  client call is genuine discovery vs. reuse vs. a plain execute) and a suggested demo script.
+

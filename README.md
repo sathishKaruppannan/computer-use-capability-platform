@@ -25,7 +25,9 @@ flowchart TD
   D --> S[Surface adapter]
   D --> C[Artifact compiler]
   C --> N["Save as draft"]
-  N --> V["Admin review and approve<br/>(POST /v1/capabilities/{id}/approve)"]
+  N --> Q["Admin queue<br/>(GET /v1/capabilities/pending)"]
+  Q --> W["Review detail<br/>(GET /v1/capabilities/{id}/review)"]
+  W --> V["Approve<br/>(POST /v1/capabilities/{id}/approve)"]
   X --> E[Deterministic executor]
   V --> E
   E --> P[Policy and checkpoints]
@@ -44,9 +46,18 @@ resolver — `discover_v1` (`src/capability_platform/api/v1_routes.py`) calls
 returns the existing `capability_id` with `reused_existing_capability: true` and triggers no
 Claude call, and a miss runs Claude discovery, compiles the artifact, and saves it as `draft`
 (requiring an explicit `/v1/capabilities/{id}/approve` by an admin credential before it's
-invocable). This reuse path is cross-client by design: whichever client discovered a
-`(service_type, system_identifier)` pair first, every later caller for that same pair reuses it.
+invocable). The response also carries `approval_required`, computed from that same lifecycle
+gate, as an explicit signal rather than making the client infer it from `lifecycle`. This reuse
+path is cross-client by design: whichever client discovered a `(service_type, system_identifier)`
+pair first, every later caller for that same pair reuses it.
 `tests/test_v1_api_e2e.py` and `tests/test_v1_api_auth.py` exercise both branches end-to-end.
+
+An admin no longer has to know a draft exists — `GET /v1/capabilities/pending` (`Q` above) lists
+every not-yet-approved capability, and `GET /v1/capabilities/{id}/review` (`W`) shows the full
+compiled plan plus `requested_by` (who asked, and their literal `goal` text, joined from
+`InquiryRecord`) before they call the unchanged `/approve`. See
+[docs/REST_API_TEST_SCENARIOS.md §6](docs/REST_API_TEST_SCENARIOS.md#6-admin-approval-queue) for
+real captured examples of all three.
 
 The plain CLI (`discover --goal "..."`) and the unauthenticated REST/MCP surfaces predate this and
 remain two separate, explicit entry points rather than going through the resolver: `discover`
@@ -227,15 +238,33 @@ curl -X POST http://127.0.0.1:8000/v1/discover -u demo-client:secret123 \
   "capability_id": "lookup-member-savings-balance.v1",
   "inquiry_id": "b2b7a9c1-2f2b-4e9b-8b0b-6a6b9f9e6a11",
   "reused_existing_capability": false,
-  "lifecycle": "draft"
+  "lifecycle": "draft",
+  "approval_required": true
 }
 ```
 
 `reused_existing_capability: false` means no prior *approved* capability matched this
 `(service_type, system_identifier)` pair, so Claude discovery ran and produced a new `draft`
-artifact — it isn't invocable yet. A later `/v1/discover` call with the same pair, once approved,
-returns the same `capability_id` with `reused_existing_capability: true` and triggers no Claude
-call at all, per `find_approved_by_service_and_system` (`capabilities/store.py`).
+artifact — it isn't invocable yet (`approval_required: true`). A later `/v1/discover` call with
+the same pair, once approved, returns the same `capability_id` with
+`reused_existing_capability: true` and `approval_required: false`, triggering no Claude call at
+all, per `find_approved_by_service_and_system` (`capabilities/store.py`).
+
+Before approving, an admin can find and inspect this draft over REST — no local filesystem/CLI
+access required:
+
+```bash
+curl -X GET http://127.0.0.1:8000/v1/capabilities/pending -u demo-client:secret123
+curl -X GET http://127.0.0.1:8000/v1/capabilities/lookup-member-savings-balance.v1/review \
+  -u demo-client:secret123
+```
+
+The first lists every pending capability (summary only); the second returns the full compiled
+plan — every step, locator, and risk level — plus `requested_by`: who asked and their literal
+`goal` text, joined from every `InquiryRecord` that named this `capability_id`. Both are
+admin-only (`credential.is_admin`, same gate as `/approve`) and unrelated to `require_service_type`
+— see [docs/REST_API_TEST_SCENARIOS.md §6](docs/REST_API_TEST_SCENARIOS.md#6-admin-approval-queue)
+for real captured request/response pairs.
 
 ```bash
 # Approve (admin credential only — draft artifacts are not invocable by anyone until this).
@@ -365,6 +394,38 @@ A denial (`{"approved": false}`, or simply not approving) fails the run with a s
 `category=policy, code=APPROVAL_DENIED` error rather than proceeding — it's never silently
 treated as approved. See `tests/test_approval.py` for both outcomes exercised end-to-end.
 
+`Intervention.kind` (`"pause"` vs `"approval"`, `intervention/manager.py`) tells the two shapes
+above apart without parsing `reason` text — used by the admin dashboard (below) to show the
+right action buttons. **Same-session proof, concretely, not just by design:** `ReplayEngine`
+logs `page_identity = id(surface.page)` — CPython's object identity for the live Playwright
+`Page` — into `evidence/runs/<run_id>/events.jsonl` at `intervention.created` and again after
+resume; identical values on both sides prove the exact same in-process browser session was
+reused, not a new one substituted in. Two throwaway demo capabilities
+(`scripts/debug/create_pause_demo_capability.py`, `create_approval_demo_capability.py` — or the
+admin dashboard's one-click "Seed demo capabilities" button) exist purely to drive both flows
+live against a capability that isn't otherwise pause/risk-enabled.
+
+## Admin dashboard
+
+`GET /admin` (open `http://127.0.0.1:8000/admin` once `make platform` is running) is a single
+local page that consolidates every flow above into one click-through demo: client initiate
+(`/v1/discover`), pending artifacts → review → approve, execute (success / business-outcome /
+failure), both intervention flows with the same-session proof rendered inline, an observability
+event-trace viewer, and client-side statistics — each section carries an "Implements:" note
+citing the exact file/function it demonstrates. Plain HTML/CSS/vanilla JS, no build step, no
+framework, same-origin `fetch()` calls only — deliberately not a Claude Artifact, since an
+Artifact runs in a sandboxed browser on claude.ai and can't reach this machine's `127.0.0.1`.
+
+Three small endpoints exist purely to support it (local-demo-only, unauthenticated, not part of
+the versioned `/v1` contract): `GET /runs/{run_id}/events` (reads back a run's redacted evidence
+trace), `POST /admin/seed-demo-capabilities` (one-click version of the two scripts above), and
+`POST /admin/reset-to-draft/{capability_id}` (flips an approved capability back to `draft` with
+no Claude call, so the approve flow can be re-demoed instantly and repeatably). See
+[docs/REST_API_TEST_SCENARIOS.md §8](docs/REST_API_TEST_SCENARIOS.md#8-new-demo-only-endpoints)
+for curl examples of all three, and
+[docs/ARCHITECTURE_WALKTHROUGH.md](docs/ARCHITECTURE_WALKTHROUGH.md) for the full demo script
+this page walks.
+
 ## Tests
 
 ```bash
@@ -427,6 +488,18 @@ relevant to tracing a discovery run:
   which calls the generated MCP tool function directly — bypassing the stdio/JSON-RPC
   transport — so it can be single-stepped without a second connected MCP client process.
 
+- **"Debug: create pause-demo capability (human handoff)"** / **"Debug: create approval-demo
+  capability (risky-step approval)"** run the two `scripts/debug/create_*_demo_capability.py`
+  scripts (shared builder logic in `capabilities/demo_seed.py`) — saves a throwaway capability
+  with a pause `ErrorRule` or a `RISKY` step injected, so the intervention flows are drivable
+  against a real capability instead of only inside a test process. The admin dashboard's "Seed
+  demo capabilities" button does the same thing over REST.
+
+- **"Debug: intervention/handoff test (pause + resume)"** / **"Debug: risky-action approval
+  test"** step through `tests/test_intervention.py` / `tests/test_approval.py` — both real
+  `ReplayEngine` runs (no Claude, no API key needed), just against an in-memory-modified copy of
+  the artifact rather than a saved one.
+
 ### How a client actually drives the REST flow
 
 Concretely, an integrating client's REST call sequence is: **register once** (out-of-band, via
@@ -440,6 +513,9 @@ step-by-step browser instructions — `service_type` + `system_identifier` + a n
 on the way out. `approve` is deliberately not part of a client's normal path — it's an
 admin-only gate (`credential.is_admin`), so a `draft` artifact a client's own discovery call
 produced still needs separate sign-off before anyone, including that same client, can execute it.
+On the admin side, `GET /v1/capabilities/pending` and `GET /v1/capabilities/{id}/review`
+(both admin-only) are how that sign-off actually gets triggered — an admin doesn't need local
+filesystem or CLI access just to find out a draft exists.
 
 ## Repository map
 
