@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -8,7 +9,15 @@ from capability_platform.access.models import ClientCredential, InquiryRecord
 from capability_platform.access.system_registry import SystemNotRegisteredError
 from capability_platform.api.auth import authenticate_client, require_service_type
 from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
-from capability_platform.models import ExecutionResult, ServiceType
+from capability_platform.models import (
+    ApplicationBinding,
+    Checkpoint,
+    ExecutionResult,
+    OutputSpec,
+    ParameterSpec,
+    ServiceType,
+    Step,
+)
 from capability_platform.runtime import (
     discovery_agent,
     inquiry_tracker,
@@ -34,6 +43,7 @@ class DiscoverV1Response(BaseModel):
     inquiry_id: str
     reused_existing_capability: bool
     lifecycle: str
+    approval_required: bool
 
 
 class ExecuteV1Request(BaseModel):
@@ -44,6 +54,46 @@ class ExecuteV1Request(BaseModel):
 class ApproveV1Response(BaseModel):
     capability_id: str
     lifecycle: str
+
+
+class PendingCapabilitySummary(BaseModel):
+    capability_id: str
+    name: str
+    lifecycle: str
+    service_type: ServiceType | None
+    system_identifier: str | None
+    created_at: datetime
+    discovered_by: str
+
+
+class PendingCapabilityListResponse(BaseModel):
+    capabilities: list[PendingCapabilitySummary]
+
+
+class RequesterInfo(BaseModel):
+    client_id: str
+    goal: str | None
+    client_inquiry_id: str
+    environment: str
+    created_at: datetime
+
+
+class CapabilityReviewResponse(BaseModel):
+    capability_id: str
+    name: str
+    description: str
+    lifecycle: str
+    service_type: ServiceType | None
+    system_identifier: str | None
+    application: ApplicationBinding
+    inputs: list[ParameterSpec]
+    outputs: list[OutputSpec]
+    steps: list[Step]
+    success: Checkpoint
+    created_at: datetime
+    discovered_by: str
+    tags: list[str]
+    requested_by: list[RequesterInfo]
 
 
 @router.post("/discover", response_model=DiscoverV1Response)
@@ -65,6 +115,7 @@ async def discover_v1(
                 inquiry_id=inquiry_id,
                 client_inquiry_id=request.client_inquiry_id,
                 client_id=credential.client_id,
+                goal=request.goal,
                 service_type=request.service_type,
                 system_identifier=request.system_identifier,
                 capability_id=existing.qualified_id,
@@ -77,6 +128,7 @@ async def discover_v1(
             inquiry_id=inquiry_id,
             reused_existing_capability=True,
             lifecycle=existing.lifecycle,
+            approval_required=existing.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES,
         )
 
     try:
@@ -97,6 +149,7 @@ async def discover_v1(
             inquiry_id=inquiry_id,
             client_inquiry_id=request.client_inquiry_id,
             client_id=credential.client_id,
+            goal=request.goal,
             service_type=request.service_type,
             system_identifier=request.system_identifier,
             capability_id=artifact.qualified_id,
@@ -109,6 +162,7 @@ async def discover_v1(
         inquiry_id=inquiry_id,
         reused_existing_capability=False,
         lifecycle=artifact.lifecycle,
+        approval_required=artifact.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES,
     )
 
 
@@ -145,6 +199,75 @@ async def execute_v1(
         )
     )
     return result
+
+
+@router.get("/capabilities/pending", response_model=PendingCapabilityListResponse)
+def list_pending_capabilities_v1(
+    credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
+) -> PendingCapabilityListResponse:
+    if not credential.is_admin:
+        raise HTTPException(403, "Client is not authorized to view the approval queue")
+    drafts = [a for a in store().list() if a.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES]
+    return PendingCapabilityListResponse(
+        capabilities=[
+            PendingCapabilitySummary(
+                capability_id=a.qualified_id,
+                name=a.name,
+                lifecycle=a.lifecycle,
+                service_type=a.service_type,
+                system_identifier=a.system_identifier,
+                created_at=a.created_at,
+                discovered_by=a.discovered_by,
+            )
+            for a in drafts
+        ]
+    )
+
+
+@router.get("/capabilities/{capability_id}/review", response_model=CapabilityReviewResponse)
+def review_capability_v1(
+    capability_id: str,
+    credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
+) -> CapabilityReviewResponse:
+    if not credential.is_admin:
+        raise HTTPException(403, "Client is not authorized to review capabilities")
+    try:
+        artifact = store().load(capability_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Capability not found") from exc
+    # Every inquiry that ever asked for this exact capability_id, oldest first — not just the
+    # one that triggered discovery, since a repeat caller's own inquiry is still worth showing
+    # to a reviewer even though it didn't itself run discovery.
+    inquiries = sorted(
+        (i for i in inquiry_tracker().list() if i.capability_id == artifact.qualified_id),
+        key=lambda i: i.created_at,
+    )
+    return CapabilityReviewResponse(
+        capability_id=artifact.qualified_id,
+        name=artifact.name,
+        description=artifact.description,
+        lifecycle=artifact.lifecycle,
+        service_type=artifact.service_type,
+        system_identifier=artifact.system_identifier,
+        application=artifact.application,
+        inputs=artifact.inputs,
+        outputs=artifact.outputs,
+        steps=artifact.steps,
+        success=artifact.success,
+        created_at=artifact.created_at,
+        discovered_by=artifact.discovered_by,
+        tags=artifact.tags,
+        requested_by=[
+            RequesterInfo(
+                client_id=i.client_id,
+                goal=i.goal,
+                client_inquiry_id=i.client_inquiry_id,
+                environment=i.environment,
+                created_at=i.created_at,
+            )
+            for i in inquiries
+        ],
+    )
 
 
 @router.post("/capabilities/{capability_id}/approve", response_model=ApproveV1Response)

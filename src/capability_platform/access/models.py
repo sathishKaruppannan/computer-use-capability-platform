@@ -22,6 +22,7 @@ class InquiryRecord(BaseModel):
     inquiry_id: str
     client_inquiry_id: str
     client_id: str
+    goal: str | None = None
     service_type: ServiceType | None = None
     system_identifier: str | None = None
     capability_id: str | None = None

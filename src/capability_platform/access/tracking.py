@@ -9,6 +9,7 @@ from capability_platform.access.models import InquiryRecord
 class InquiryTracker(Protocol):
     def record(self, record: InquiryRecord) -> Path: ...
     def get(self, inquiry_id: str) -> InquiryRecord | None: ...
+    def list(self) -> list[InquiryRecord]: ...
 
 
 class JSONInquiryTracker:
@@ -31,3 +32,11 @@ class JSONInquiryTracker:
         if not path.exists():
             return None
         return InquiryRecord.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def list(self) -> list[InquiryRecord]:
+        """Every inquiry on disk — used to join goal/client_id onto a capability for admin
+        review (see api/v1_routes.py's review_capability_v1)."""
+        return [
+            InquiryRecord.model_validate_json(p.read_text(encoding="utf-8"))
+            for p in self.root.glob("*.json")
+        ]

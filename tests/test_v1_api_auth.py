@@ -7,7 +7,7 @@ import json
 from fastapi.testclient import TestClient
 
 from capability_platform.access.credentials import JSONCredentialStore, hash_password
-from capability_platform.access.models import ClientCredential
+from capability_platform.access.models import ClientCredential, InquiryRecord
 from capability_platform.access.tracking import JSONInquiryTracker
 from capability_platform.api import app as app_module
 from capability_platform.api import v1_routes as v1_routes_module
@@ -171,6 +171,7 @@ def test_discover_v1_reuses_existing_approved_capability_without_calling_discove
     assert body["reused_existing_capability"] is True
     assert body["capability_id"] == "balance-cap.v1"
     assert body["lifecycle"] == "approved"
+    assert body["approval_required"] is False  # already approved, nothing left to do
 
     tracked = JSONInquiryTracker(global_settings.tracking_dir).get(body["inquiry_id"])
     assert tracked is not None
@@ -241,6 +242,7 @@ def test_discover_v1_runs_discovery_and_saves_new_capability_when_no_reuse_match
     body = response.json()
     assert body["reused_existing_capability"] is False
     assert body["lifecycle"] == "draft"
+    assert body["approval_required"] is True  # fresh draft, an admin still has to approve it
     assert calls == ["demo"]
 
     saved = ArtifactStore(global_settings.artifact_dir).load(body["capability_id"])
@@ -314,3 +316,72 @@ def test_approve_v1_succeeds_for_admin(monkeypatch, tmp_path):
 
     reloaded = ArtifactStore(global_settings.artifact_dir).load("draft-cap.v1")
     assert reloaded.lifecycle == "approved"
+
+
+def test_list_pending_v1_requires_admin(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=False)
+    client = TestClient(app_module.app)
+
+    response = client.get("/v1/capabilities/pending", auth=("demo-client", "correct-pw"))
+    assert response.status_code == 403
+
+
+def test_list_pending_v1_returns_only_drafts(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    artifact_store = ArtifactStore(global_settings.artifact_dir)
+    artifact_store.save(_artifact("draft-cap", "draft"))
+    artifact_store.save(_artifact("approved-cap", "approved"))
+    artifact_store.save(_artifact("active-cap", "active"))
+    client = TestClient(app_module.app)
+
+    response = client.get("/v1/capabilities/pending", auth=("admin-client", "correct-pw"))
+    assert response.status_code == 200
+    ids = {c["capability_id"] for c in response.json()["capabilities"]}
+    assert ids == {"draft-cap.v1"}
+
+
+def test_review_v1_requires_admin(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=False)
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("draft-cap", "draft"))
+    client = TestClient(app_module.app)
+
+    response = client.get("/v1/capabilities/draft-cap.v1/review", auth=("demo-client", "correct-pw"))
+    assert response.status_code == 403
+
+
+def test_review_v1_unknown_capability_returns_404(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    client = TestClient(app_module.app)
+
+    response = client.get(
+        "/v1/capabilities/does-not-exist.v1/review", auth=("admin-client", "correct-pw")
+    )
+    assert response.status_code == 404
+
+
+def test_review_v1_includes_goal_and_requester(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("draft-cap", "draft"))
+    JSONInquiryTracker(global_settings.tracking_dir).record(
+        InquiryRecord(
+            inquiry_id="inq-1",
+            client_inquiry_id="client-req-001",
+            client_id="requesting-client",
+            goal="Look up a member's savings balance",
+            capability_id="draft-cap.v1",
+        )
+    )
+    client = TestClient(app_module.app)
+
+    response = client.get("/v1/capabilities/draft-cap.v1/review", auth=("admin-client", "correct-pw"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lifecycle"] == "draft"
+    assert len(body["requested_by"]) == 1
+    assert body["requested_by"][0]["client_id"] == "requesting-client"
+    assert body["requested_by"][0]["goal"] == "Look up a member's savings balance"
