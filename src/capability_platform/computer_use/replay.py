@@ -84,6 +84,13 @@ class ReplayEngine:
         screenshot = await evidence.screenshot(await surface.screenshot(), f"approval-{step.id}")
         paused_state = await surface.observe()
         reason = f"Step {step.id!r} is {step.risk} and requires human approval before it runs"
+        # id(surface.page) is a same-session proof marker, not a browser/CDP identifier: it's
+        # CPython's object identity for the exact in-memory Page object handed to
+        # InterventionManager below. Logged again after wait_for_approval returns (same variable,
+        # never reassigned — no new surface.start() runs between pause and resume) so the two
+        # events in evidence/runs/<run_id>/events.jsonl are directly diffable: identical value
+        # proves the same live page/session was reused, not a fresh one substituted in.
+        page_identity = id(surface.page)
         item = interventions.create(
             run_id,
             reason,
@@ -92,6 +99,7 @@ class ReplayEngine:
             screenshot=screenshot,
             state=paused_state,
             page=surface.page,
+            kind="approval",
         )
         result.intervention_id = item.id
         evidence.event(
@@ -103,13 +111,18 @@ class ReplayEngine:
             reason=reason,
             screenshot=screenshot,
             state=paused_state,
+            page_identity=page_identity,
         )
         evidence.event("control.transferred", owner="human", intervention_id=item.id)
         result.status = RunStatus.PAUSED
         approved = await interventions.wait_for_approval(item.id)
         result.status = RunStatus.FAILURE
         evidence.event(
-            "control.transferred", owner="automation", intervention_id=item.id, approved=approved
+            "control.transferred",
+            owner="automation",
+            intervention_id=item.id,
+            approved=approved,
+            page_identity=id(surface.page),
         )
         return approved
 
@@ -245,6 +258,8 @@ class ReplayEngine:
                         if error_rule.recovery == "pause":
                             screenshot = await evidence.screenshot(await surface.screenshot(), f"pause-{step.id}")
                             paused_state = await surface.observe()
+                            # Same same-session proof marker as the approval path above.
+                            page_identity = id(surface.page)
                             item = interventions.create(
                                 run_id,
                                 error_rule.message,
@@ -253,6 +268,7 @@ class ReplayEngine:
                                 screenshot=screenshot,
                                 state=paused_state,
                                 page=surface.page,
+                                kind="pause",
                             )
                             result.intervention_id = item.id
                             evidence.event(
@@ -264,6 +280,7 @@ class ReplayEngine:
                                 reason=error_rule.message,
                                 screenshot=screenshot,
                                 state=paused_state,
+                                page_identity=page_identity,
                             )
                             evidence.event(
                                 "control.transferred", owner="human", intervention_id=item.id
@@ -275,9 +292,12 @@ class ReplayEngine:
                                 "control.transferred",
                                 owner="automation",
                                 intervention_id=item.id,
+                                page_identity=id(surface.page),
                             )
                             resumed_state = await surface.observe()
-                            evidence.event("resume.observed", state=resumed_state)
+                            evidence.event(
+                                "resume.observed", state=resumed_state, page_identity=id(surface.page)
+                            )
                             if await self._checkpoint(surface, error_rule.when, inputs):
                                 raise RuntimeError(
                                     f"Interruption at step {step.id!r} was not resolved "

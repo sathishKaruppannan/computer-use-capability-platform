@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -21,8 +21,12 @@ class Intervention(BaseModel):
     screenshot: str | None = None
     state: dict[str, Any] = Field(default_factory=dict)
     owner: ControlOwner = ControlOwner.HUMAN
-    # Only meaningful for an approval-gated intervention (risky/irreversible step); None for a
-    # plain pause/dismiss handoff (e.g. an unexpected interstitial) where approval isn't a concept.
+    # "approval": a risky/irreversible step awaiting an explicit approve/deny decision.
+    # "pause": an unexpected condition (e.g. an interstitial) awaiting dismissal — approval
+    # isn't a concept here, resuming is enough. Lets a UI show the right action(s) without
+    # having to parse `reason` text.
+    kind: Literal["pause", "approval"] = "pause"
+    # Only meaningful when kind == "approval"; None for a plain pause/dismiss handoff.
     approved: bool | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
