@@ -9,6 +9,8 @@ The repository also demonstrates extensibility through a normalized capability r
 dependency-free semantic retrieval, composable skills, a grounded result synthesizer, a REST
 API, and an MCP server. These surround rather than weaken the required computer-use core.
 
+Just want it running, without `uv`, plus test/debug commands? See [RUNNING.md](RUNNING.md).
+
 ## Architecture
 
 ```mermaid

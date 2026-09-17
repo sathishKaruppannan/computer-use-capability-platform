@@ -1,0 +1,27 @@
+# Plain-pip alternative to `uv sync` (see RUNNING.md / README.md "Setup").
+# Prefer uv if you have it: `uv sync --extra dev` reads pyproject.toml + uv.lock directly and
+# this file becomes unnecessary. These are the exact versions this codebase's test suite was
+# last verified against (pinned, not just pyproject.toml's `>=` floors) -- mirrors uv.lock.
+#
+# Install:
+#   python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+#   python -m playwright install chromium
+
+# --- runtime (required to run demo_app / capability_platform) ---
+anthropic==1.5.0
+fastapi==0.141.1
+mcp==2.2.0
+openai==3.13.0
+playwright==1.62.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-multipart==0.0.32
+structlog==26.1.0
+uvicorn==0.52.4
+
+# --- dev / test (only needed to run the test suite or lint) ---
+httpx==0.28.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.16.7
