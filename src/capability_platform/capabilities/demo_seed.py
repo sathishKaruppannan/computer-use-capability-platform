@@ -32,6 +32,15 @@ def build_pause_demo(store: ArtifactStore) -> CapabilityArtifact:
         "human handoff live. Not for production use."
     )
     demo.lifecycle = "approved"
+    # Deliberately cleared, not copied from base: this is a standalone fixture meant to be
+    # invoked only by its own capability_id (see the dashboard's "seed demo capabilities"
+    # shortcuts), never through the resolver. Left set, it would collide with the real
+    # capability's own (service_type, system_identifier) pair the moment base has been stamped
+    # by a real discovery -- ArtifactStore.find_approved_by_service_and_system() would then have
+    # two-plus equally-valid approved matches and return whichever ArtifactStore.list() happens
+    # to enumerate first (filesystem glob order, not deterministic).
+    demo.service_type = None
+    demo.system_identifier = None
     demo.steps[1].errors.append(
         ErrorRule(
             code="SESSION_INTERSTITIAL",
@@ -63,5 +72,9 @@ def build_approval_demo(store: ArtifactStore) -> CapabilityArtifact:
         "human approval gate live. Not for production use."
     )
     demo.lifecycle = "approved"
+    # Same reasoning as build_pause_demo above -- cleared, not copied, so this never collides
+    # with the real capability in the resolver.
+    demo.service_type = None
+    demo.system_identifier = None
     demo.steps[2].risk = RiskLevel.RISKY
     return demo

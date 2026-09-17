@@ -17,7 +17,7 @@ from capability_platform.capabilities.demo_seed import (
     build_pause_demo,
 )
 from capability_platform.capabilities.store import ArtifactStore
-from capability_platform.models import ErrorCategory, RiskLevel
+from capability_platform.models import ErrorCategory, RiskLevel, ServiceType
 from capability_platform.settings import settings as global_settings
 
 
@@ -26,6 +26,8 @@ def test_build_pause_demo_injects_pause_error_rule():
     demo = build_pause_demo(store)
     assert demo.id == PAUSE_DEMO_ID
     assert demo.lifecycle == "approved"
+    assert demo.service_type is None
+    assert demo.system_identifier is None
     injected = demo.steps[1].errors[-1]
     assert injected.recovery == "pause"
     assert injected.category == ErrorCategory.RECOVERABLE
@@ -37,7 +39,38 @@ def test_build_approval_demo_marks_step_risky():
     demo = build_approval_demo(store)
     assert demo.id == APPROVAL_DEMO_ID
     assert demo.lifecycle == "approved"
+    assert demo.service_type is None
+    assert demo.system_identifier is None
     assert demo.steps[2].risk == RiskLevel.RISKY
+
+
+def test_demo_builders_dont_pollute_resolver_when_base_is_stamped(monkeypatch, tmp_path):
+    """Regression test for a real bug: once the real base capability has been through a genuine
+    /v1/discover (service_type/system_identifier stamped, lifecycle=approved), the two seeded
+    demo capabilities must NOT become spurious matches for the same resolver lookup -- confirmed
+    live: find_approved_by_service_and_system() non-deterministically returned the risky
+    approval-demo capability instead of the real one, because both were `approved` and both
+    carried the same (service_type, system_identifier) pair (copied verbatim by model_copy)."""
+    monkeypatch.setattr(global_settings, "artifact_dir", tmp_path / "artifacts")
+    real_store = ArtifactStore(Path("artifacts"))
+    base = real_store.load("lookup-member-savings-balance.v1")
+    stamped = base.model_copy(deep=True)
+    stamped.service_type = ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP
+    stamped.system_identifier = "legacy-member-servicing-demo"
+    stamped.lifecycle = "approved"  # explicit, not inherited -- the real on-disk file's current
+    # lifecycle is whatever local interactive testing last left it as (draft right now), and
+    # list_approved()/find_approved_by_service_and_system() only consider approved/active.
+
+    isolated_store = ArtifactStore(tmp_path / "artifacts")
+    isolated_store.save(stamped)
+    isolated_store.save(build_pause_demo(isolated_store))
+    isolated_store.save(build_approval_demo(isolated_store))
+
+    found = isolated_store.find_approved_by_service_and_system(
+        ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP, "legacy-member-servicing-demo"
+    )
+    assert found is not None
+    assert found.id == stamped.id
 
 
 def test_seed_demo_capabilities_creates_both(monkeypatch, tmp_path):
