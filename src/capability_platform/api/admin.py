@@ -130,6 +130,22 @@ ADMIN_HTML = """<!doctype html>
       name/value pairs via the goal hint. <code>auth_type</code> just changes which named values that is:
       <code>username</code>/<code>password</code>, or a single <code>apiKey</code> — same mechanism either
       way (<code>ClaudeDiscoveryAgent._credential_input_specs</code>).</div>
+    <div class="field"><label>Target resource type</label>
+      <select id="ci-resource-type" onchange="onResourceTypeChange()">
+        <option value="url">URL (web)</option>
+        <option value="exe">Executable (.exe)</option>
+        <option value="iframe">URL with iFrame</option>
+        <option value="other">Other surface (custom)</option>
+      </select></div>
+    <p class="impl" id="ci-resource-type-note" style="display:none">
+      <b>Not implemented for this demo.</b> Only <code>URL (web)</code> is functional here — discovery drives a real
+      Playwright browser against a web page. The other options are shown to illustrate where this platform is
+      designed to grow: every surface-specific action (click, type, screenshot, read) already sits behind one
+      abstraction, <code>SurfaceAdapter</code> (<code>computer_use/surface.py</code>), and <code>PlaywrightSurface</code>
+      is its only implementation today. A desktop <code>.exe</code> or an embedded iframe target would plug in as a
+      second <code>SurfaceAdapter</code> implementation — same discovery/replay engine, same artifact format, no
+      planner changes — rather than a rewrite. Select <code>URL (web)</code> to use this demo.</p>
+    <div id="ci-url-fields">
     <div class="row">
       <div class="field"><label>service_type</label>
         <select id="ci-service-type"><option value="member_savings_balance_lookup">member_savings_balance_lookup</option></select></div>
@@ -171,13 +187,14 @@ ADMIN_HTML = """<!doctype html>
       <div class="field"><label>example_member_id</label><input id="ci-member-id" value="10001"></div>
       <div class="field"><label>client_inquiry_id (auto)</label><input id="ci-inquiry-id" readonly></div>
     </div>
-    <button class="primary" onclick="submitDiscover()">Run discover</button>
+    <button class="primary" id="ci-run-discover-btn" onclick="submitDiscover()">Run discover</button>
     <p id="ci-status" class="meta"></p>
     <div class="impl" id="ci-progress" style="display:none">
       <b>Live discovery progress</b> — each step as Claude decides it (action, locator strategy/value, why):
       <div class="events" id="ci-progress-events"></div>
     </div>
     <div class="events" id="ci-result" style="display:none"></div>
+    </div>
     <p class="meta">Already approved and matches the pair above? "Run discover" will just <b>reuse</b> it (correct
       behavior, not a bug — no new draft, no Claude call). To demo the approve flow (§2) again without spending a
       real ~30-60s Claude call every time, reset it back to <code>draft</code> instead:</p>
@@ -357,6 +374,12 @@ function onSystemChange() {
   const sel = document.getElementById('ci-system-identifier');
   const opt = sel.options[sel.selectedIndex];
   document.getElementById('ci-system-url').textContent = opt ? `Target URL: ${opt.dataset.url}` : '';
+}
+
+function onResourceTypeChange() {
+  const isUrl = document.getElementById('ci-resource-type').value === 'url';
+  document.getElementById('ci-url-fields').style.display = isUrl ? 'block' : 'none';
+  document.getElementById('ci-resource-type-note').style.display = isUrl ? 'none' : 'block';
 }
 
 function onUseDirectUrlChange() {
