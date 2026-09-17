@@ -1,0 +1,1 @@
+{"timestamp": "2026-09-17T15:56:51.545400+00:00", "event": "validation.failed", "error": {"category": "validation", "code": "MISSING_INPUT", "message": "Missing required input 'username'", "step_id": null, "expected": null, "observed": null, "evidence_path": null, "recoverable": false}}

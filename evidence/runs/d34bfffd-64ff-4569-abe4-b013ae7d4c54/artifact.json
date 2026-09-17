@@ -1,0 +1,220 @@
+{
+  "schema_version": "1.0",
+  "id": "lookup-member-savings-balance",
+  "version": 1,
+  "name": "Lookup member savings balance",
+  "description": "Find a member in the legacy demo app and return the savings balance.",
+  "lifecycle": "draft",
+  "application": {
+    "vendor": "Interface Demo",
+    "product": "Legacy Member Servicing",
+    "base_url": "http://127.0.0.1:8001",
+    "supported_versions": [
+      "demo-v1"
+    ],
+    "tenant_overrides": {}
+  },
+  "inputs": [
+    {
+      "name": "memberId",
+      "type": "string",
+      "description": "Demo member identifier",
+      "required": true,
+      "sensitive": false,
+      "pattern": "^\\d{5}$"
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savingsBalance",
+      "type": "number",
+      "description": "Current savings balance",
+      "sensitive": false
+    }
+  ],
+  "steps": [
+    {
+      "id": "step-1",
+      "action": "type",
+      "description": "Enter member ID 10001 into the Member Number search field",
+      "risk": "reversible",
+      "target": {
+        "primary": {
+          "strategy": "label",
+          "value": "Member Number",
+          "name": null,
+          "exact": true,
+          "frame": null
+        },
+        "fallbacks": [],
+        "rationale": "Accessible semantic target selected during successful Claude discovery"
+      },
+      "value": "{{memberId}}",
+      "output": null,
+      "checkpoint": null,
+      "errors": []
+    },
+    {
+      "id": "step-2",
+      "action": "click",
+      "description": "Click the Search button to find member 10001",
+      "risk": "read_only",
+      "target": {
+        "primary": {
+          "strategy": "role",
+          "value": "button",
+          "name": "Search",
+          "exact": true,
+          "frame": null
+        },
+        "fallbacks": [],
+        "rationale": "Accessible semantic target selected during successful Claude discovery"
+      },
+      "value": null,
+      "output": null,
+      "checkpoint": null,
+      "errors": [
+        {
+          "code": "MEMBER_NOT_FOUND",
+          "category": "business",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "primary": {
+                "strategy": "text",
+                "value": "Member not found",
+                "name": null,
+                "exact": false,
+                "frame": null
+              },
+              "fallbacks": [],
+              "rationale": "Explicit application business outcome"
+            },
+            "expected": null,
+            "timeout_ms": 10000
+          },
+          "message": "No member exists for the supplied identifier",
+          "recovery": "return",
+          "max_retries": 0
+        }
+      ]
+    },
+    {
+      "id": "step-3",
+      "action": "click",
+      "description": "Click Open Accounts button to view member's account details including savings balance",
+      "risk": "read_only",
+      "target": {
+        "primary": {
+          "strategy": "role",
+          "value": "button",
+          "name": "Open Accounts",
+          "exact": true,
+          "frame": null
+        },
+        "fallbacks": [],
+        "rationale": "Accessible semantic target selected during successful Claude discovery"
+      },
+      "value": null,
+      "output": null,
+      "checkpoint": null,
+      "errors": [
+        {
+          "code": "MEMBER_NOT_FOUND",
+          "category": "business",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "primary": {
+                "strategy": "text",
+                "value": "Member not found",
+                "name": null,
+                "exact": false,
+                "frame": null
+              },
+              "fallbacks": [],
+              "rationale": "Explicit application business outcome"
+            },
+            "expected": null,
+            "timeout_ms": 10000
+          },
+          "message": "No member exists for the supplied identifier",
+          "recovery": "return",
+          "max_retries": 0
+        }
+      ]
+    },
+    {
+      "id": "step-4",
+      "action": "extract",
+      "description": "Extract the savings balance from the Available Balance column for Primary Savings account",
+      "risk": "read_only",
+      "target": {
+        "primary": {
+          "strategy": "xpath",
+          "value": "//tr[td[contains(.,'Primary Savings')]]/td[2]",
+          "name": null,
+          "exact": true,
+          "frame": null
+        },
+        "fallbacks": [],
+        "rationale": "Accessible semantic target selected during successful Claude discovery"
+      },
+      "value": null,
+      "output": "savingsBalance",
+      "checkpoint": null,
+      "errors": [
+        {
+          "code": "MEMBER_NOT_FOUND",
+          "category": "business",
+          "when": {
+            "kind": "visible",
+            "target": {
+              "primary": {
+                "strategy": "text",
+                "value": "Member not found",
+                "name": null,
+                "exact": false,
+                "frame": null
+              },
+              "fallbacks": [],
+              "rationale": "Explicit application business outcome"
+            },
+            "expected": null,
+            "timeout_ms": 10000
+          },
+          "message": "No member exists for the supplied identifier",
+          "recovery": "return",
+          "max_retries": 0
+        }
+      ]
+    }
+  ],
+  "success": {
+    "kind": "visible",
+    "target": {
+      "primary": {
+        "strategy": "text",
+        "value": "Savings Account",
+        "name": null,
+        "exact": false,
+        "frame": null
+      },
+      "fallbacks": [],
+      "rationale": "Business-state heading confirms the accounts screen"
+    },
+    "expected": null,
+    "timeout_ms": 10000
+  },
+  "created_at": "2026-09-15T20:04:14.342025Z",
+  "discovered_by": "anthropic:claude-sonnet-4-5 prompt=production.v1",
+  "approval_required": true,
+  "tags": [
+    "member",
+    "savings",
+    "balance",
+    "computer-use"
+  ],
+  "service_type": null,
+  "system_identifier": null
+}

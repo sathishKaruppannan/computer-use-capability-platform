@@ -1,0 +1,6 @@
+{"timestamp": "2026-09-15T17:58:26.171318+00:00", "event": "replay.started", "capability": "lookup-member-savings-balance.v1", "inputs": {"memberId": "99999"}}
+{"timestamp": "2026-09-15T17:58:26.171741+00:00", "event": "step.started", "step_id": "step-1", "action": "type"}
+{"timestamp": "2026-09-15T17:58:26.199921+00:00", "event": "step.completed", "step_id": "step-1"}
+{"timestamp": "2026-09-15T17:58:26.200111+00:00", "event": "step.started", "step_id": "step-2", "action": "click"}
+{"timestamp": "2026-09-15T17:58:26.288199+00:00", "event": "business_outcome", "code": "MEMBER_NOT_FOUND", "step_id": "step-2"}
+{"timestamp": "2026-09-15T17:58:26.288387+00:00", "event": "replay.finished", "result": {"run_id": "f24a2cf6-2e9e-4d89-9d60-34941b19bdaf", "status": "business_outcome", "capability_id": "lookup-member-savings-balance.v1", "outputs": {}, "business_code": "MEMBER_NOT_FOUND", "error": null, "intervention_id": null, "started_at": "2026-09-15T17:58:25.364048Z", "completed_at": "2026-09-15T17:58:26.288195Z"}}

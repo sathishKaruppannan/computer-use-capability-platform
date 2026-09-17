@@ -1,0 +1,5 @@
+{"timestamp": "2026-09-14T19:50:56.067831+00:00", "event": "replay.started", "capability": "lookup-member-savings-balance.v1", "inputs": {"memberId": "10005"}}
+{"timestamp": "2026-09-14T19:50:56.068133+00:00", "event": "step.started", "step_id": "step-1", "action": "type"}
+{"timestamp": "2026-09-14T19:50:56.089719+00:00", "event": "step.completed", "step_id": "step-1"}
+{"timestamp": "2026-09-14T19:50:56.089896+00:00", "event": "step.started", "step_id": "step-2", "action": "click"}
+{"timestamp": "2026-09-14T19:50:56.147455+00:00", "event": "replay.finished", "result": {"run_id": "853ab821-388a-4ba6-83e4-8b762d5508ad", "status": "failure", "capability_id": "lookup-member-savings-balance.v1", "outputs": {}, "business_code": null, "error": {"category": "auth", "code": "SESSION_EXPIRED", "message": "The session expired mid-flow and must be re-authenticated", "step_id": "step-2", "expected": null, "observed": null, "evidence_path": "evidence/runs/853ab821-388a-4ba6-83e4-8b762d5508ad/failure-step-2.png", "recoverable": false}, "intervention_id": null, "started_at": "2026-09-14T19:50:55.795043Z", "completed_at": "2026-09-14T19:50:56.147402Z"}}

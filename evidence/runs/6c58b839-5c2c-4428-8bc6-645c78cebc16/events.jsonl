@@ -1,0 +1,17 @@
+{"timestamp": "2026-09-17T02:21:12.361961+00:00", "event": "replay.started", "capability": "lookup-savings-balance-legacy-member-servicing-demo-secure.v1", "inputs": {"memberId": "10002", "username": "demo", "password": "[REDACTED_PASSWORD]"}}
+{"timestamp": "2026-09-17T02:21:12.362287+00:00", "event": "step.started", "step_id": "step-1", "action": "type"}
+{"timestamp": "2026-09-17T02:21:12.392554+00:00", "event": "step.completed", "step_id": "step-1"}
+{"timestamp": "2026-09-17T02:21:12.392809+00:00", "event": "step.started", "step_id": "step-2", "action": "type"}
+{"timestamp": "2026-09-17T02:21:12.429291+00:00", "event": "step.completed", "step_id": "step-2"}
+{"timestamp": "2026-09-17T02:21:12.429461+00:00", "event": "step.started", "step_id": "step-3", "action": "click"}
+{"timestamp": "2026-09-17T02:21:12.517725+00:00", "event": "step.completed", "step_id": "step-3"}
+{"timestamp": "2026-09-17T02:21:12.517926+00:00", "event": "step.started", "step_id": "step-4", "action": "type"}
+{"timestamp": "2026-09-17T02:21:12.528111+00:00", "event": "step.completed", "step_id": "step-4"}
+{"timestamp": "2026-09-17T02:21:12.528373+00:00", "event": "step.started", "step_id": "step-5", "action": "click"}
+{"timestamp": "2026-09-17T02:21:12.607153+00:00", "event": "step.completed", "step_id": "step-5"}
+{"timestamp": "2026-09-17T02:21:12.607327+00:00", "event": "step.started", "step_id": "step-6", "action": "click"}
+{"timestamp": "2026-09-17T02:21:12.690311+00:00", "event": "step.completed", "step_id": "step-6"}
+{"timestamp": "2026-09-17T02:21:12.690656+00:00", "event": "step.started", "step_id": "step-7", "action": "extract"}
+{"timestamp": "2026-09-17T02:21:12.702594+00:00", "event": "step.completed", "step_id": "step-7"}
+{"timestamp": "2026-09-17T02:21:12.705201+00:00", "event": "replay.completed", "outputs": {"savingsBalance": 1220.0}}
+{"timestamp": "2026-09-17T02:21:12.705420+00:00", "event": "replay.finished", "result": {"run_id": "6c58b839-5c2c-4428-8bc6-645c78cebc16", "status": "success", "capability_id": "lookup-savings-balance-legacy-member-servicing-demo-secure.v1", "outputs": {"savingsBalance": 1220.0}, "business_code": null, "error": null, "intervention_id": null, "started_at": "2026-09-17T02:21:11.644913Z", "completed_at": "2026-09-17T02:21:12.705195Z"}}

@@ -1,0 +1,1 @@
+{"timestamp": "2026-09-17T17:45:01.005823+00:00", "event": "validation.failed", "error": {"category": "validation", "code": "INVALID_INPUT", "message": "Input 'memberId' does not match required pattern '^\\\\d{5}$'", "step_id": null, "expected": null, "observed": null, "evidence_path": null, "recoverable": false}}

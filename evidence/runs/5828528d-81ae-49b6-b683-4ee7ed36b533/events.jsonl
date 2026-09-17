@@ -1,0 +1,8 @@
+{"timestamp": "2026-09-16T22:52:10.129487+00:00", "event": "replay.started", "capability": "lookup-member-savings-balance-approval-demo.v1", "inputs": {"memberId": "10002"}}
+{"timestamp": "2026-09-16T22:52:10.130126+00:00", "event": "step.started", "step_id": "step-1", "action": "type"}
+{"timestamp": "2026-09-16T22:52:10.173458+00:00", "event": "step.completed", "step_id": "step-1"}
+{"timestamp": "2026-09-16T22:52:10.173622+00:00", "event": "step.started", "step_id": "step-2", "action": "click"}
+{"timestamp": "2026-09-16T22:52:10.252443+00:00", "event": "step.completed", "step_id": "step-2"}
+{"timestamp": "2026-09-16T22:52:10.252613+00:00", "event": "step.started", "step_id": "step-3", "action": "click"}
+{"timestamp": "2026-09-16T22:52:10.283318+00:00", "event": "intervention.created", "intervention_id": "30eaa14f-5b09-4e78-b59e-678ff4b05e7d", "run_id": "5828528d-81ae-49b6-b683-4ee7ed36b533", "capability_id": "lookup-member-savings-balance-approval-demo.v1", "step_id": "step-3", "reason": "Step 'step-3' is risky and requires human approval before it runs", "screenshot": "evidence/runs/5828528d-81ae-49b6-b683-4ee7ed36b533/approval-step-3.png", "state": {"url": "http://127.0.0.1:8001/search", "accessibility": "- banner: MemberServ 7 - Internal Operations\n- main:\n  - heading \"Member Details\" [level=1]\n  - table:\n    - rowgroup:\n      - row \"Member Number 10002\":\n        - rowheader \"Member Number\"\n        - cell \"10002\"\n      - row \"Name Jordan Lee\":\n        - rowheader \"Name\"\n        - cell \"Jordan Lee\"\n  - button \"Open Accounts\""}, "page_identity": 4503352768}
+{"timestamp": "2026-09-16T22:52:10.283511+00:00", "event": "control.transferred", "owner": "human", "intervention_id": "30eaa14f-5b09-4e78-b59e-678ff4b05e7d"}
