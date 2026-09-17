@@ -92,6 +92,7 @@ ADMIN_HTML = """<!doctype html>
       script."</p>
     <nav class="toc">
       <a href="#client-initiate">1. Client initiate</a>
+      <a href="#test-app">Test app</a>
       <a href="#pending-capabilities">2. Pending artifacts</a>
       <a href="#all-artifacts">3. All artifacts</a>
       <a href="#execute">4. Execute</a>
@@ -127,17 +128,36 @@ ADMIN_HTML = """<!doctype html>
     <div class="row">
       <div class="field"><label>service_type</label>
         <select id="ci-service-type"><option value="member_savings_balance_lookup">member_savings_balance_lookup</option></select></div>
-      <div class="field"><label>system_identifier</label>
-        <input id="ci-system-identifier" value="legacy-member-servicing-demo"></div>
+      <div class="field" id="ci-system-field"><label>system_identifier</label>
+        <select id="ci-system-identifier" onchange="onSystemChange()"></select>
+        <p class="meta" id="ci-system-url"></p></div>
+    </div>
+    <div class="field"><label><input type="checkbox" id="ci-use-direct-url" onchange="onUseDirectUrlChange()">
+      Use a direct URL instead (skip the system registry)</label></div>
+    <div class="row" id="ci-direct-url-fields" style="display:none">
+      <div class="field"><label>target_url</label><input id="ci-target-url" placeholder="http://127.0.0.1:8001/secure"></div>
+      <div class="field"><label>system_identifier (any label — reuse/artifact-id key, not registry-checked)</label>
+        <input id="ci-direct-system-identifier" placeholder="my-direct-target"></div>
     </div>
     <div class="field"><label>goal</label>
       <input id="ci-goal" value="Find member 10001 and return savings balance"></div>
+    <div class="field"><label><input type="checkbox" id="ci-auth-required" onchange="onAuthRequiredChange()"> Requires login?</label></div>
+    <div class="row" id="ci-auth-fields" style="display:none">
+      <div class="field"><label>example_username</label><input id="ci-username" value="demo"></div>
+      <div class="field"><label>example_password</label><input id="ci-password" type="password" value="letmein-2024"></div>
+    </div>
+    <div class="field"><label><input type="checkbox" id="ci-force-rediscover">
+      Force re-discover (update existing capability with a fresh LLM pass)</label></div>
     <div class="row">
       <div class="field"><label>example_member_id</label><input id="ci-member-id" value="10001"></div>
       <div class="field"><label>client_inquiry_id (auto)</label><input id="ci-inquiry-id" readonly></div>
     </div>
     <button class="primary" onclick="submitDiscover()">Run discover</button>
     <p id="ci-status" class="meta"></p>
+    <div class="impl" id="ci-progress" style="display:none">
+      <b>Live discovery progress</b> — each step as Claude decides it (action, locator strategy/value, why):
+      <div class="events" id="ci-progress-events"></div>
+    </div>
     <div class="events" id="ci-result" style="display:none"></div>
     <p class="meta">Already approved and matches the pair above? "Run discover" will just <b>reuse</b> it (correct
       behavior, not a bug — no new draft, no Claude call). To demo the approve flow (§2) again without spending a
@@ -147,6 +167,16 @@ ADMIN_HTML = """<!doctype html>
     </div>
     <button onclick="resetToDraft()">Reset to draft (no Claude call, instant)</button>
     <p id="rd-status" class="meta"></p>
+  </section>
+
+  <section id="test-app">
+    <h2>Test app <span class="badge">preview only</span></h2>
+    <div class="impl"><b>Implements:</b> nothing — this is a manual preview iframe of the target demo app's own
+      pages (<code>demo_app/app.py</code>), so you can see what Claude will see before running discovery.
+      <b>This is NOT a live view of the separate Playwright-controlled automation browser window</b> — discovery
+      opens its own independent, non-headless browser context entirely outside this page; the iframe below and
+      that automation browser are two different browser sessions with no connection to each other.</div>
+    <iframe src="http://127.0.0.1:8001" style="width:100%;height:420px;border:1px solid #ccc"></iframe>
   </section>
 
   <section id="pending-capabilities">
@@ -243,7 +273,10 @@ ADMIN_HTML = """<!doctype html>
       <summary>9. Full requirement ↔ implementation reference table</summary>
       <table class="ref">
         <tr><th>Requirement</th><th>Demoed in</th><th>File / function</th><th>Engine / note</th></tr>
-        <tr><td>Test app</td><td>header link</td><td><code>demo_app/app.py</code></td><td>standalone FastAPI app, the automation target</td></tr>
+        <tr><td>Test app</td><td>header link + dedicated iframe section</td><td><code>demo_app/app.py</code></td><td>standalone FastAPI app, the automation target — including <code>/secure/*</code>, the login-gated area</td></tr>
+        <tr><td>Auth-required discovery, log in and continue</td><td>§1 ("Requires login?")</td><td><code>agent/discovery.py:discover</code>, <code>demo_app/app.py</code> <code>/secure/*</code></td><td>Claude finds the login form itself; credentials templated as <code>{{username}}</code>/<code>{{password}}</code>, never baked into the artifact</td></tr>
+        <tr><td>Recreate / update via fresh LLM pass</td><td>§1 ("Force re-discover")</td><td><code>v1_routes.py:discover_v1</code> <code>force_rediscover</code></td><td>bypasses the reuse check; <code>ArtifactStore.save()</code> overwrites in place</td></tr>
+        <tr><td>Show URL / direct-URL discovery</td><td>§1 (system picker + "Use a direct URL")</td><td><code>v1_routes.py</code> <code>GET /v1/systems</code>, <code>target_url</code></td><td><code>PolicyEngine.authorize_url()</code> still enforced either way</td></tr>
         <tr><td>Client initiate (REST, auth)</td><td>§1</td><td><code>v1_routes.py:discover_v1</code></td><td>HTTP Basic via <code>api/auth.py</code></td></tr>
         <tr><td>Create / pending artifacts</td><td>§1</td><td><code>CapabilityArtifact.lifecycle</code> default <code>"draft"</code></td><td>no LLM call on a reuse hit</td></tr>
         <tr><td>Client approval flow</td><td>§2</td><td><code>v1_routes.py:approve_v1</code></td><td>admin-gated, independent of the model (rule #2)</td></tr>
@@ -289,36 +322,123 @@ function primeInquiryIds() {
   document.getElementById('ex-inquiry-id').value = newInquiryId();
 }
 
+async function loadSystems() {
+  try {
+    const res = await fetch('/v1/systems');
+    const data = await res.json();
+    const sel = document.getElementById('ci-system-identifier');
+    sel.innerHTML = data.systems.map(s =>
+      `<option value="${esc(s.system_identifier)}" data-url="${esc(s.base_url)}">${esc(s.system_identifier)} — ${esc(s.base_url)}</option>`
+    ).join('');
+    onSystemChange();
+  } catch (e) { /* best-effort; system picker just stays empty */ }
+}
+
+function onSystemChange() {
+  const sel = document.getElementById('ci-system-identifier');
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('ci-system-url').textContent = opt ? `Target URL: ${opt.dataset.url}` : '';
+}
+
+function onUseDirectUrlChange() {
+  const useDirect = document.getElementById('ci-use-direct-url').checked;
+  document.getElementById('ci-system-field').style.display = useDirect ? 'none' : 'block';
+  document.getElementById('ci-direct-url-fields').style.display = useDirect ? 'flex' : 'none';
+}
+
+function onAuthRequiredChange() {
+  document.getElementById('ci-auth-fields').style.display =
+    document.getElementById('ci-auth-required').checked ? 'flex' : 'none';
+}
+
+let progressTimer = null;
+
+function startProgressPolling(runId) {
+  document.getElementById('ci-progress').style.display = 'block';
+  document.getElementById('ci-progress-events').textContent = 'waiting for discovery to start…';
+  const poll = async () => {
+    try {
+      const res = await fetch(`/runs/${encodeURIComponent(runId)}/events`);
+      if (!res.ok) return;  // not created yet, or nothing to show -- try again next tick
+      const data = await res.json();
+      renderProgressEvents(data.events || []);
+    } catch (e) { /* keep polling */ }
+  };
+  poll();
+  progressTimer = setInterval(poll, 1500);
+}
+
+async function stopProgressPolling(runId) {
+  clearInterval(progressTimer);
+  progressTimer = null;
+  if (runId) {
+    try {
+      const res = await fetch(`/runs/${encodeURIComponent(runId)}/events`);
+      if (res.ok) renderProgressEvents((await res.json()).events || []);
+    } catch (e) { /* final poll is best-effort */ }
+  }
+}
+
+function renderProgressEvents(events) {
+  const decided = events.filter(e => e.event === 'discovery.decided');
+  if (decided.length === 0) {
+    document.getElementById('ci-progress-events').textContent = 'waiting for the first step…';
+    return;
+  }
+  document.getElementById('ci-progress-events').textContent = decided.map((e, i) => {
+    const d = e.decision || {};
+    const locator = d.strategy ? `${d.strategy}=${d.value || d.name || ''}` : '(no locator)';
+    return `Step ${i + 1}: ${d.action} — ${locator} — ${d.reason || ''}`;
+  }).join('\\n');
+}
+
 async function submitDiscover() {
   const status = document.getElementById('ci-status');
   const box = document.getElementById('ci-result');
+  const useDirectUrl = document.getElementById('ci-use-direct-url').checked;
+  const authRequired = document.getElementById('ci-auth-required').checked;
+  const discoveryRunId = newInquiryId();
   status.textContent = 'Running discovery… this may take up to a minute and opens a visible browser.';
   box.style.display = 'none';
+  startProgressPolling(discoveryRunId);
   try {
     const body = {
       service_type: document.getElementById('ci-service-type').value,
-      system_identifier: document.getElementById('ci-system-identifier').value,
+      system_identifier: useDirectUrl
+        ? document.getElementById('ci-direct-system-identifier').value
+        : document.getElementById('ci-system-identifier').value,
       client_inquiry_id: document.getElementById('ci-inquiry-id').value,
       goal: document.getElementById('ci-goal').value,
       example_member_id: document.getElementById('ci-member-id').value,
+      is_auth_required: authRequired,
+      force_rediscover: document.getElementById('ci-force-rediscover').checked,
+      discovery_run_id: discoveryRunId,
     };
+    if (useDirectUrl) body.target_url = document.getElementById('ci-target-url').value;
+    if (authRequired) {
+      body.example_username = document.getElementById('ci-username').value;
+      body.example_password = document.getElementById('ci-password').value;
+    }
     const res = await fetch('/v1/discover', {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    await stopProgressPolling(discoveryRunId);
     box.style.display = 'block';
     box.textContent = JSON.stringify(data, null, 2);
     if (!res.ok) { status.textContent = `Failed: HTTP ${res.status}`; return; }
     state.lastCapabilityId = data.capability_id;
     document.getElementById('ex-capability-id').value = data.capability_id;
+    document.getElementById('ob-run-id').value = discoveryRunId;
     status.textContent = data.reused_existing_capability
       ? 'reused_existing_capability = true → reused an existing approved capability, zero LLM calls.'
       : 'reused_existing_capability = false → brand-new draft/pending artifact created. See §2 below to review + approve it.';
     primeInquiryIds();
     refreshAll();
   } catch (e) {
+    await stopProgressPolling(discoveryRunId);
     status.textContent = 'Error: ' + esc(e);
   }
 }
@@ -597,6 +717,7 @@ function toggleAuto() {
 }
 
 primeInquiryIds();
+loadSystems();
 refreshAll();
 </script>
 </body>
