@@ -36,6 +36,19 @@ class DiscoverV1Request(BaseModel):
     goal: str
     environment: Literal["production", "demo"] = "production"
     example_member_id: str = "10001"
+    is_auth_required: bool = False
+    example_username: str | None = None
+    example_password: str | None = None
+    force_rediscover: bool = False
+    # Discovery-time bypass of the system registry: when set, discovery targets this URL
+    # directly instead of resolving system_identifier through config/system_registry.json.
+    # system_identifier is still required (it remains the resolver's reuse/artifact-id key) but
+    # no longer needs to be pre-registered when target_url is supplied.
+    target_url: str | None = None
+    # Client-generated correlation id so a UI can poll GET /runs/{id}/events for live progress
+    # while this (long-running, ~30-90s) call is still in flight — see discover() in
+    # agent/discovery.py, which uses this instead of generating its own run_id when provided.
+    discovery_run_id: str | None = None
 
 
 class DiscoverV1Response(BaseModel):
@@ -54,6 +67,18 @@ class ExecuteV1Request(BaseModel):
 class ApproveV1Response(BaseModel):
     capability_id: str
     lifecycle: str
+
+
+class SystemSummary(BaseModel):
+    system_identifier: str
+    base_url: str
+    vendor: str
+    product: str
+    description: str
+
+
+class SystemListResponse(BaseModel):
+    systems: list[SystemSummary]
 
 
 class PendingCapabilitySummary(BaseModel):
@@ -104,8 +129,12 @@ async def discover_v1(
     require_service_type(request.service_type, credential)
     inquiry_id = str(uuid4())
 
-    existing = store().find_approved_by_service_and_system(
-        request.service_type, request.system_identifier
+    existing = (
+        None
+        if request.force_rediscover
+        else store().find_approved_by_service_and_system(
+            request.service_type, request.system_identifier
+        )
     )
     if existing is not None:
         # Cross-client reuse: this capability may have been discovered by a different
@@ -131,15 +160,34 @@ async def discover_v1(
             approval_required=existing.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES,
         )
 
-    try:
-        system_entry = system_registry().resolve(request.system_identifier)
-    except SystemNotRegisteredError as exc:
+    if request.target_url:
+        base_url = request.target_url
+    else:
+        try:
+            system_entry = system_registry().resolve(request.system_identifier)
+        except SystemNotRegisteredError as exc:
+            raise HTTPException(
+                400, f"Unknown system_identifier: {request.system_identifier}"
+            ) from exc
+        base_url = system_entry.base_url
+
+    if request.is_auth_required and (not request.example_username or not request.example_password):
         raise HTTPException(
-            400, f"Unknown system_identifier: {request.system_identifier}"
-        ) from exc
+            400, "is_auth_required=true requires both example_username and example_password"
+        )
+    extra_known_values = (
+        {"username": request.example_username, "password": request.example_password}
+        if request.is_auth_required
+        else None
+    )
 
     artifact = await discovery_agent(environment=request.environment).discover(
-        request.goal, system_entry.base_url, request.example_member_id
+        request.goal,
+        base_url,
+        request.example_member_id,
+        extra_known_values=extra_known_values,
+        system_identifier=request.system_identifier,
+        run_id=request.discovery_run_id,
     )
     artifact.service_type = request.service_type
     artifact.system_identifier = request.system_identifier
@@ -163,6 +211,24 @@ async def discover_v1(
         reused_existing_capability=False,
         lifecycle=artifact.lifecycle,
         approval_required=artifact.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES,
+    )
+
+
+@router.get("/systems", response_model=SystemListResponse)
+def list_systems_v1() -> SystemListResponse:
+    """Unauthenticated, unlike the rest of /v1 — the registry holds no secrets, and a client
+    needs this just to find a valid system_identifier before it can call anything else."""
+    return SystemListResponse(
+        systems=[
+            SystemSummary(
+                system_identifier=e.system_identifier,
+                base_url=e.base_url,
+                vendor=e.vendor,
+                product=e.product,
+                description=e.description,
+            )
+            for e in system_registry().list()
+        ]
     )
 
 

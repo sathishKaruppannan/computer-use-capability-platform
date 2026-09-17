@@ -114,9 +114,15 @@ class ClaudeDiscoveryAgent:
         return json.loads(tool_call.function.arguments)
 
     async def discover(
-        self, goal: str, target_url: str, member_id: str = "10001"
+        self,
+        goal: str,
+        target_url: str,
+        member_id: str = "10001",
+        extra_known_values: dict[str, str] | None = None,
+        system_identifier: str | None = None,
+        run_id: str | None = None,
     ) -> CapabilityArtifact:
-        run_id = str(uuid4())
+        run_id = run_id or str(uuid4())
         evidence = EvidenceCollector(self.evidence_root, run_id)
         surface = PlaywrightSurface(self.headless)
         self._fallback_used = False
@@ -127,14 +133,39 @@ class ClaudeDiscoveryAgent:
             primary=Locator(strategy="text", value="Savings Account", exact=False),
             rationale="Business-state heading confirms the accounts screen",
         )
+        # known_values drives both the compiled-step templating below and what's actually typed
+        # into the browser during discovery (memberId is always known; extra_known_values adds
+        # e.g. username/password when the target requires a login first).
+        known_values: dict[str, str] = {"memberId": member_id, **(extra_known_values or {})}
+        effective_goal = goal
+        if extra_known_values:
+            hint = "; ".join(f"{name}={literal}" for name, literal in extra_known_values.items())
+            effective_goal = (
+                f"{goal}. If a login/sign-in form appears before reaching the goal, "
+                f"authenticate using these credentials: {hint}, then continue toward the goal."
+            )
+        # A credential literal (never its field name) that leaked into a raw model decision or
+        # page observation wouldn't be caught by Redactor's key-name-based patterns (evidence.py)
+        # -- so scrub the literal itself wherever discovery logs the model's raw tool-call output
+        # or a page snapshot, on top of that existing key-based redaction, not instead of it.
+        sensitive_literals = [v for k, v in (extra_known_values or {}).items() if k == "password"]
+
+        def _scrub(value: Any) -> Any:
+            if not sensitive_literals:
+                return value
+            text = json.dumps(value, default=str)
+            for literal in sensitive_literals:
+                text = text.replace(literal, "[REDACTED_PASSWORD]")
+            return json.loads(text)
+
         self.policy.authorize_url(target_url)
         await surface.start(target_url)
         try:
             for index in range(self.max_steps):
                 observation = await surface.observe()
-                evidence.event("discovery.observed", step=index, observation=observation)
-                decision = await self._decide(goal, observation, history, evidence)
-                evidence.event("discovery.decided", step=index, decision=decision)
+                evidence.event("discovery.observed", step=index, observation=_scrub(observation))
+                decision = await self._decide(effective_goal, observation, history, evidence)
+                evidence.event("discovery.decided", step=index, decision=_scrub(decision))
                 action = decision["action"]
                 if action == "complete":
                     if not extracted:
@@ -174,12 +205,25 @@ class ClaudeDiscoveryAgent:
                 )
                 step_action = ActionType(action)
                 value = decision.get("typed_value")
-                if value == member_id:
-                    value = "{{memberId}}"
+                if value is not None:
+                    for placeholder_name, literal in known_values.items():
+                        if value == literal:
+                            value = f"{{{{{placeholder_name}}}}}"
+                            break
+                # decision["reason"] is Claude's own free-text explanation of the step -- for a
+                # login step it naturally references the literal credential it was told to type
+                # (e.g. "Fill in password field with 'hunter2'"), and unlike `value` this text
+                # was never templated. It also ends up in the PERSISTED CapabilityArtifact (not
+                # just a transient evidence log), so it needs the same literal-substring scrub
+                # applied before it's used as the step description, on top of (not instead of)
+                # the evidence-trail scrubbing above.
+                description = decision["reason"]
+                for literal in sensitive_literals:
+                    description = description.replace(literal, "[REDACTED_PASSWORD]")
                 step = Step(
                     id=f"step-{len(steps) + 1}",
                     action=step_action,
-                    description=decision["reason"],
+                    description=description,
                     target=target,
                     value=value,
                     output=decision.get("output"),
@@ -189,9 +233,7 @@ class ClaudeDiscoveryAgent:
                 if step_action == ActionType.CLICK:
                     await surface.click(target)
                 elif step_action == ActionType.TYPE:
-                    await surface.type(
-                        target, member_id if value == "{{memberId}}" else value or ""
-                    )
+                    await surface.type(target, self._resolve_placeholder(value, known_values))
                 elif step_action == ActionType.EXTRACT:
                     output_name = step.output or "result"
                     extracted[output_name] = await surface.extract(target)
@@ -201,21 +243,48 @@ class ClaudeDiscoveryAgent:
             else:
                 raise RuntimeError("Discovery exceeded maximum steps")
 
+            # Special-cased, not derived uniformly: the existing demo capability keeps its
+            # original id regardless of this change, so nothing already committed (dashboard
+            # defaults, docs, prior artifacts) is disrupted. Only a genuinely different
+            # system_identifier gets a derived id, which is what lets it coexist as its own,
+            # independently discoverable/approvable capability.
+            artifact_id = (
+                f"lookup-savings-balance-{system_identifier}"
+                if system_identifier and system_identifier != "legacy-member-servicing-demo"
+                else "lookup-member-savings-balance"
+            )
+            inputs = [
+                ParameterSpec(
+                    name="memberId",
+                    type="string",
+                    description="Demo member identifier",
+                    pattern=r"^\d{5}$",
+                )
+            ]
+            if extra_known_values:
+                inputs.append(
+                    ParameterSpec(
+                        name="username",
+                        type="string",
+                        description="Login username for the target legacy application",
+                    )
+                )
+                inputs.append(
+                    ParameterSpec(
+                        name="password",
+                        type="string",
+                        description="Login password for the target legacy application",
+                        sensitive=True,
+                    )
+                )
             artifact = CapabilityArtifact(
-                id="lookup-member-savings-balance",
+                id=artifact_id,
                 name="Lookup member savings balance",
                 description="Find a member in the legacy demo app and return the savings balance.",
                 application=ApplicationBinding(
                     vendor="Interface Demo", product="Legacy Member Servicing", base_url=target_url
                 ),
-                inputs=[
-                    ParameterSpec(
-                        name="memberId",
-                        type="string",
-                        description="Demo member identifier",
-                        pattern=r"^\d{5}$",
-                    )
-                ],
+                inputs=inputs,
                 outputs=[
                     OutputSpec(
                         name=next(iter(extracted)),
@@ -254,6 +323,16 @@ class ClaudeDiscoveryAgent:
             "transfer", "send", "approve", "reject", "deactivate", "activate",
         }
     )
+
+    @staticmethod
+    def _resolve_placeholder(value: str | None, known_values: dict[str, str]) -> str:
+        """The inverse of the templating comparison above: given a (possibly just-templated)
+        decision value, return the real literal to actually type into the browser during
+        discovery. Generalizes the old memberId-only re-derivation to any known placeholder."""
+        for placeholder_name, literal in known_values.items():
+            if value == f"{{{{{placeholder_name}}}}}":
+                return literal
+        return value or ""
 
     @classmethod
     def _classify_risk(cls, action: ActionType, target: Target | None) -> RiskLevel:
