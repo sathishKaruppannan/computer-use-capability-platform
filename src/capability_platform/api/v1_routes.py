@@ -1,23 +1,23 @@
-from datetime import datetime
-from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
 from capability_platform.access.models import ClientCredential, InquiryRecord
 from capability_platform.access.system_registry import SystemNotRegisteredError
 from capability_platform.api.auth import authenticate_client, require_service_type
-from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
-from capability_platform.models import (
-    ApplicationBinding,
-    Checkpoint,
-    ExecutionResult,
-    OutputSpec,
-    ParameterSpec,
-    ServiceType,
-    Step,
+from capability_platform.api.schemas.requests import DiscoverV1Request, ExecuteV1Request
+from capability_platform.api.schemas.responses import (
+    ApproveV1Response,
+    CapabilityReviewResponse,
+    DiscoverV1Response,
+    PendingCapabilityListResponse,
+    PendingCapabilitySummary,
+    RequesterInfo,
+    SystemListResponse,
+    SystemSummary,
 )
+from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
+from capability_platform.models import ExecutionResult
 from capability_platform.runtime import (
     discovery_agent,
     inquiry_tracker,
@@ -27,103 +27,6 @@ from capability_platform.runtime import (
 )
 
 router = APIRouter(prefix="/v1", tags=["v1"])
-
-
-class DiscoverV1Request(BaseModel):
-    service_type: ServiceType
-    system_identifier: str
-    client_inquiry_id: str
-    goal: str
-    environment: Literal["production", "demo"] = "production"
-    example_member_id: str = "10001"
-    is_auth_required: bool = False
-    # "credentials" -> example_username + example_password; "api_key" -> example_api_key.
-    # Both end up as extra_known_values dict entries for discover() -- same underlying
-    # mechanism either way, just a different set of named credentials.
-    auth_type: Literal["credentials", "api_key"] = "credentials"
-    example_username: str | None = None
-    example_password: str | None = None
-    example_api_key: str | None = None
-    force_rediscover: bool = False
-    # Discovery-time bypass of the system registry: when set, discovery targets this URL
-    # directly instead of resolving system_identifier through config/system_registry.json.
-    # system_identifier is still required (it remains the resolver's reuse/artifact-id key) but
-    # no longer needs to be pre-registered when target_url is supplied.
-    target_url: str | None = None
-    # Client-generated correlation id so a UI can poll GET /runs/{id}/events for live progress
-    # while this (long-running, ~30-90s) call is still in flight — see discover() in
-    # agent/discovery.py, which uses this instead of generating its own run_id when provided.
-    discovery_run_id: str | None = None
-
-
-class DiscoverV1Response(BaseModel):
-    capability_id: str
-    inquiry_id: str
-    reused_existing_capability: bool
-    lifecycle: str
-    approval_required: bool
-
-
-class ExecuteV1Request(BaseModel):
-    client_inquiry_id: str
-    inputs: dict[str, Any]
-
-
-class ApproveV1Response(BaseModel):
-    capability_id: str
-    lifecycle: str
-
-
-class SystemSummary(BaseModel):
-    system_identifier: str
-    base_url: str
-    vendor: str
-    product: str
-    description: str
-
-
-class SystemListResponse(BaseModel):
-    systems: list[SystemSummary]
-
-
-class PendingCapabilitySummary(BaseModel):
-    capability_id: str
-    name: str
-    lifecycle: str
-    service_type: ServiceType | None
-    system_identifier: str | None
-    created_at: datetime
-    discovered_by: str
-
-
-class PendingCapabilityListResponse(BaseModel):
-    capabilities: list[PendingCapabilitySummary]
-
-
-class RequesterInfo(BaseModel):
-    client_id: str
-    goal: str | None
-    client_inquiry_id: str
-    environment: str
-    created_at: datetime
-
-
-class CapabilityReviewResponse(BaseModel):
-    capability_id: str
-    name: str
-    description: str
-    lifecycle: str
-    service_type: ServiceType | None
-    system_identifier: str | None
-    application: ApplicationBinding
-    inputs: list[ParameterSpec]
-    outputs: list[OutputSpec]
-    steps: list[Step]
-    success: Checkpoint
-    created_at: datetime
-    discovered_by: str
-    tags: list[str]
-    requested_by: list[RequesterInfo]
 
 
 @router.post("/discover", response_model=DiscoverV1Response)
