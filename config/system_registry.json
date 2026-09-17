@@ -6,6 +6,13 @@
       "vendor": "Interface Demo",
       "product": "Legacy Member Servicing",
       "description": "Demo legacy member servicing app used for savings balance lookups"
+    },
+    {
+      "systemIdentifier": "legacy-member-servicing-demo-secure",
+      "baseUrl": "http://127.0.0.1:8001/secure",
+      "vendor": "Interface Demo",
+      "product": "Legacy Member Servicing (Auth-Required)",
+      "description": "Same demo app behind a login gate -- exercises Claude discovering and completing a login form before reaching the savings-balance flow"
     }
   ]
 }
