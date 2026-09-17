@@ -148,7 +148,9 @@ ADMIN_HTML = """<!doctype html>
       <input id="ci-goal" value="Find member 10001 and return savings balance"></div>
     <div class="field"><label><input type="checkbox" id="ci-auth-required" onchange="onAuthRequiredChange()"> Requires login?</label>
       <p class="meta">Checking this auto-selects the matching <code>-secure</code> system below, if one exists — the
-        resolver doesn't otherwise check that your target actually has a login page.</p></div>
+        resolver doesn't otherwise check that your target actually has a login page. <b>If that system is already
+        approved from an earlier run, "Run discover" will just reuse it and skip discovery entirely</b> — check
+        "Force re-discover" below too if you specifically want to watch it run again live.</p></div>
     <div id="ci-auth-fields" style="display:none">
       <div class="field"><label>auth_type</label>
         <select id="ci-auth-type" onchange="onAuthTypeChange()">
@@ -465,13 +467,25 @@ async function submitDiscover() {
     await stopProgressPolling(discoveryRunId);
     box.style.display = 'block';
     box.textContent = JSON.stringify(data, null, 2);
-    if (!res.ok) { status.textContent = `Failed: HTTP ${res.status}`; return; }
+    if (!res.ok) {
+      status.textContent = `Failed: HTTP ${res.status}`;
+      document.getElementById('ci-progress-events').textContent = 'Failed before any discovery ran — see the response below.';
+      return;
+    }
     state.lastCapabilityId = data.capability_id;
     document.getElementById('ex-capability-id').value = data.capability_id;
     document.getElementById('ob-run-id').value = discoveryRunId;
-    status.textContent = data.reused_existing_capability
-      ? 'reused_existing_capability = true → reused an existing approved capability, zero LLM calls.'
-      : 'reused_existing_capability = false → brand-new draft/pending artifact created. See §2 below to review + approve it.';
+    if (data.reused_existing_capability) {
+      // On a reuse, discover_v1() never calls discover() at all -- no evidence run directory
+      // is ever created for discoveryRunId, so the progress panel would otherwise be stuck on
+      // "waiting for discovery to start..." forever with no explanation. Make the reuse itself
+      // the visible result instead of leaving that message hanging.
+      document.getElementById('ci-progress-events').textContent =
+        'Reused an existing approved capability for this (service_type, system_identifier) pair — no discovery ran, so there is nothing to show here. Check "Force re-discover" above to force a fresh run instead.';
+      status.textContent = 'reused_existing_capability = true → reused an existing approved capability, zero LLM calls.';
+    } else {
+      status.textContent = 'reused_existing_capability = false → brand-new draft/pending artifact created. See §2 below to review + approve it.';
+    }
     primeInquiryIds();
     refreshAll();
   } catch (e) {
