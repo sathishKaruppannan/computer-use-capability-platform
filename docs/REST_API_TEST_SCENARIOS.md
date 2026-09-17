@@ -1151,6 +1151,42 @@ reuse/artifact-id key) but no longer needs to be pre-registered.
 URL outside `config/policy.json`'s `allowedHosts` fails the same way an unregistered
 `system_identifier` does today, just one layer later.
 
+### 9.7 `auth_type` — credentials or a single API key, same mechanism
+
+`is_auth_required` alone defaults to `auth_type: "credentials"` (username + password, §9.3-9.5
+above). Setting `auth_type: "api_key"` instead swaps in a single named credential, `apiKey`, via
+the exact same `extra_known_values` mechanism — no special-cased discovery logic per auth type.
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST http://127.0.0.1:8000/v1/discover \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
+    "service_type": "member_savings_balance_lookup",
+    "system_identifier": "legacy-member-servicing-demo",
+    "client_inquiry_id": "x", "goal": "g",
+    "is_auth_required": true, "auth_type": "api_key"
+  }'
+```
+```json
+{ "detail": "is_auth_required=true with auth_type=api_key requires example_api_key" }
+HTTP 400
+```
+(Real captured — the validation is live and working. A full real discovery in `api_key` mode
+needs a demo-app page with an actual API-key field, which doesn't exist yet; the credential-name
+generalization itself — `ClaudeDiscoveryAgent._credential_input_specs`, the evidence/description
+scrub, and `extra_known_values` construction — is unit-tested directly instead, and is the exact
+same code path already proven live for `username`/`password` in §9.3.)
+
+`apiKey` is marked `sensitive: true` on the compiled artifact the same way `password` is, and is
+already masked at replay time by `Redactor`'s existing `api[_-]?key` pattern — confirmed live:
+`Redactor.clean({"apiKey": "sk-secret"})` → `{"apiKey": "[REDACTED_SECRET]"}`, zero code changes
+needed for that half either.
+
+**How the system knows which field gets which credential**: there's no field-name matching on
+our side. Claude reads the page and matches each named credential (`username`, `password`, or
+`apiKey`) to a labeled input itself — the same visual/semantic reasoning it already uses to find
+the "Member Number" search box. Our code only ever supplies the name/value pairs via the goal
+hint (`agent/discovery.py`'s `effective_goal`); it never tells Claude which DOM element to use.
+
 ---
 
 ## Appendix: full scenario index
@@ -1193,3 +1229,5 @@ URL outside `config/policy.json`'s `allowedHosts` fails the same way an unregist
 | 9.4 | Approve + execute with independent replay credentials | valid, admin | 200 `success`, balance correct | ✅ live |
 | 9.5 | `force_rediscover: true` | valid, admin | 200, fresh discovery, same id | ✅ live |
 | 9.6 | `target_url` bypass, unregistered `system_identifier` | valid, admin | 200, no 400 | ✅ unit test (`test_discover_v1_target_url_bypasses_registry`) |
+| 9.7 | `auth_type: api_key` without `example_api_key` | valid, admin | 400 | ✅ live |
+| 9.7 | `apiKey` masked by `Redactor` | — | `[REDACTED_SECRET]` | ✅ live |

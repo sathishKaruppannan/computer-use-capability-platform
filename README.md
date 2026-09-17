@@ -443,7 +443,12 @@ same member-search flow behind a login form — registered as a second system,
 `legacy-member-servicing-demo-secure`, in `config/system_registry.json`. Claude discovers the
 login form itself, the same observe→decide→act loop as everything else, and the compiled
 artifact only ever retains `{{username}}`/`{{password}}` placeholders — never the literal
-credential. See [docs/REST_API_TEST_SCENARIOS.md §9](docs/REST_API_TEST_SCENARIOS.md#9-auth-required-discovery-login-gated-legacy-app)
+credential. `auth_type` selects `"credentials"` (username + password, the default) or
+`"api_key"` (a single `apiKey`) — same underlying mechanism either way
+(`ClaudeDiscoveryAgent._credential_input_specs`), no per-type discovery logic. There's no
+field-name matching on our side for either: Claude matches each named credential to a labeled
+input itself, the same way it already finds the member-search box. See
+[docs/REST_API_TEST_SCENARIOS.md §9](docs/REST_API_TEST_SCENARIOS.md#9-auth-required-discovery-login-gated-legacy-app)
 for the full walkthrough with real captured output.
 
 ## Tests
