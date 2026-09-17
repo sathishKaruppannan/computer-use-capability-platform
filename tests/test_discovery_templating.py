@@ -32,3 +32,24 @@ def test_resolve_placeholder_ignores_unknown_placeholder_syntax():
         ClaudeDiscoveryAgent._resolve_placeholder("{{somethingElse}}", known_values)
         == "{{somethingElse}}"
     )
+
+
+def test_credential_input_specs_none_when_no_auth():
+    assert ClaudeDiscoveryAgent._credential_input_specs(None) == []
+    assert ClaudeDiscoveryAgent._credential_input_specs({}) == []
+
+
+def test_credential_input_specs_for_credentials_auth():
+    specs = ClaudeDiscoveryAgent._credential_input_specs(
+        {"username": "demo", "password": "letmein-2024"}
+    )
+    by_name = {s.name: s for s in specs}
+    assert by_name["username"].sensitive is False
+    assert by_name["password"].sensitive is True
+
+
+def test_credential_input_specs_for_api_key_auth():
+    specs = ClaudeDiscoveryAgent._credential_input_specs({"apiKey": "sk-demo-abc123"})
+    assert len(specs) == 1
+    assert specs[0].name == "apiKey"
+    assert specs[0].sensitive is True

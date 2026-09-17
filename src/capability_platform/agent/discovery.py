@@ -148,14 +148,17 @@ class ClaudeDiscoveryAgent:
         # page observation wouldn't be caught by Redactor's key-name-based patterns (evidence.py)
         # -- so scrub the literal itself wherever discovery logs the model's raw tool-call output
         # or a page snapshot, on top of that existing key-based redaction, not instead of it.
-        sensitive_literals = [v for k, v in (extra_known_values or {}).items() if k == "password"]
+        # "username" is the one known-value name never treated as a secret; everything else
+        # extra_known_values carries (password, apiKey, or any future credential name) is --
+        # this generalizes past the original password-only scrub without hardcoding each name.
+        sensitive_literals = [v for k, v in (extra_known_values or {}).items() if k != "username"]
 
         def _scrub(value: Any) -> Any:
             if not sensitive_literals:
                 return value
             text = json.dumps(value, default=str)
             for literal in sensitive_literals:
-                text = text.replace(literal, "[REDACTED_PASSWORD]")
+                text = text.replace(literal, "[REDACTED]")
             return json.loads(text)
 
         self.policy.authorize_url(target_url)
@@ -219,7 +222,7 @@ class ClaudeDiscoveryAgent:
                 # the evidence-trail scrubbing above.
                 description = decision["reason"]
                 for literal in sensitive_literals:
-                    description = description.replace(literal, "[REDACTED_PASSWORD]")
+                    description = description.replace(literal, "[REDACTED]")
                 step = Step(
                     id=f"step-{len(steps) + 1}",
                     action=step_action,
@@ -260,23 +263,7 @@ class ClaudeDiscoveryAgent:
                     description="Demo member identifier",
                     pattern=r"^\d{5}$",
                 )
-            ]
-            if extra_known_values:
-                inputs.append(
-                    ParameterSpec(
-                        name="username",
-                        type="string",
-                        description="Login username for the target legacy application",
-                    )
-                )
-                inputs.append(
-                    ParameterSpec(
-                        name="password",
-                        type="string",
-                        description="Login password for the target legacy application",
-                        sensitive=True,
-                    )
-                )
+            ] + self._credential_input_specs(extra_known_values)
             artifact = CapabilityArtifact(
                 id=artifact_id,
                 name="Lookup member savings balance",
@@ -333,6 +320,22 @@ class ClaudeDiscoveryAgent:
             if value == f"{{{{{placeholder_name}}}}}":
                 return literal
         return value or ""
+
+    @staticmethod
+    def _credential_input_specs(extra_known_values: dict[str, str] | None) -> list[ParameterSpec]:
+        """One ParameterSpec per extra_known_values key -- covers credentials auth (username,
+        password) and api_key auth (apiKey) alike with the same logic, no per-auth-type
+        branching. "username" is the one name never marked sensitive; every other credential
+        name (password, apiKey, or any future one) is."""
+        return [
+            ParameterSpec(
+                name=credential_name,
+                type="string",
+                description=f"Login credential ({credential_name}) for the target legacy application",
+                sensitive=(credential_name != "username"),
+            )
+            for credential_name in (extra_known_values or {})
+        ]
 
     @classmethod
     def _classify_risk(cls, action: ActionType, target: Target | None) -> RiskLevel:

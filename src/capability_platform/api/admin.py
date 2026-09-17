@@ -124,7 +124,12 @@ ADMIN_HTML = """<!doctype html>
       Playwright browser with Claude deciding each step. <b>This is the only button on the whole page that opens a
       browser and calls Claude</b> — everything else below replays deterministically or just reads data. A fresh
       discover's artifact defaults to <code>lifecycle: "draft"</code>, so this one button also covers "create
-      artifacts" and "create pending artifacts."</div>
+      artifacts" and "create pending artifacts." <b>How credentials find the right field:</b> there's no
+      field-name matching on our side — Claude reads the page and matches each named credential to a labeled
+      input itself, the same way it already finds the "Member Number" box; our code only supplies the
+      name/value pairs via the goal hint. <code>auth_type</code> just changes which named values that is:
+      <code>username</code>/<code>password</code>, or a single <code>apiKey</code> — same mechanism either
+      way (<code>ClaudeDiscoveryAgent._credential_input_specs</code>).</div>
     <div class="row">
       <div class="field"><label>service_type</label>
         <select id="ci-service-type"><option value="member_savings_balance_lookup">member_savings_balance_lookup</option></select></div>
@@ -141,10 +146,22 @@ ADMIN_HTML = """<!doctype html>
     </div>
     <div class="field"><label>goal</label>
       <input id="ci-goal" value="Find member 10001 and return savings balance"></div>
-    <div class="field"><label><input type="checkbox" id="ci-auth-required" onchange="onAuthRequiredChange()"> Requires login?</label></div>
-    <div class="row" id="ci-auth-fields" style="display:none">
-      <div class="field"><label>example_username</label><input id="ci-username" value="demo"></div>
-      <div class="field"><label>example_password</label><input id="ci-password" type="password" value="letmein-2024"></div>
+    <div class="field"><label><input type="checkbox" id="ci-auth-required" onchange="onAuthRequiredChange()"> Requires login?</label>
+      <p class="meta">Checking this auto-selects the matching <code>-secure</code> system below, if one exists — the
+        resolver doesn't otherwise check that your target actually has a login page.</p></div>
+    <div id="ci-auth-fields" style="display:none">
+      <div class="field"><label>auth_type</label>
+        <select id="ci-auth-type" onchange="onAuthTypeChange()">
+          <option value="credentials">Username &amp; Password</option>
+          <option value="api_key">API Key</option>
+        </select></div>
+      <div class="row" id="ci-credentials-fields">
+        <div class="field"><label>example_username</label><input id="ci-username" value="demo"></div>
+        <div class="field"><label>example_password</label><input id="ci-password" type="password" value="letmein-2024"></div>
+      </div>
+      <div class="row" id="ci-apikey-fields" style="display:none">
+        <div class="field"><label>example_api_key</label><input id="ci-api-key" placeholder="sk-demo-..."></div>
+      </div>
     </div>
     <div class="field"><label><input type="checkbox" id="ci-force-rediscover">
       Force re-discover (update existing capability with a fresh LLM pass)</label></div>
@@ -347,8 +364,22 @@ function onUseDirectUrlChange() {
 }
 
 function onAuthRequiredChange() {
-  document.getElementById('ci-auth-fields').style.display =
-    document.getElementById('ci-auth-required').checked ? 'flex' : 'none';
+  const checked = document.getElementById('ci-auth-required').checked;
+  document.getElementById('ci-auth-fields').style.display = checked ? 'block' : 'none';
+  if (checked && !document.getElementById('ci-use-direct-url').checked) {
+    // Convenience: the resolver doesn't check whether the selected system actually has a login
+    // page, so auto-pick the matching "-secure" one if it exists, rather than silently
+    // discovering against a target with no login form to find.
+    const sel = document.getElementById('ci-system-identifier');
+    const secureOpt = Array.from(sel.options).find(o => o.value.endsWith('-secure'));
+    if (secureOpt) { sel.value = secureOpt.value; onSystemChange(); }
+  }
+}
+
+function onAuthTypeChange() {
+  const isApiKey = document.getElementById('ci-auth-type').value === 'api_key';
+  document.getElementById('ci-credentials-fields').style.display = isApiKey ? 'none' : 'flex';
+  document.getElementById('ci-apikey-fields').style.display = isApiKey ? 'flex' : 'none';
 }
 
 let progressTimer = null;
@@ -416,8 +447,14 @@ async function submitDiscover() {
     };
     if (useDirectUrl) body.target_url = document.getElementById('ci-target-url').value;
     if (authRequired) {
-      body.example_username = document.getElementById('ci-username').value;
-      body.example_password = document.getElementById('ci-password').value;
+      const authType = document.getElementById('ci-auth-type').value;
+      body.auth_type = authType;
+      if (authType === 'api_key') {
+        body.example_api_key = document.getElementById('ci-api-key').value;
+      } else {
+        body.example_username = document.getElementById('ci-username').value;
+        body.example_password = document.getElementById('ci-password').value;
+      }
     }
     const res = await fetch('/v1/discover', {
       method: 'POST',

@@ -37,8 +37,13 @@ class DiscoverV1Request(BaseModel):
     environment: Literal["production", "demo"] = "production"
     example_member_id: str = "10001"
     is_auth_required: bool = False
+    # "credentials" -> example_username + example_password; "api_key" -> example_api_key.
+    # Both end up as extra_known_values dict entries for discover() -- same underlying
+    # mechanism either way, just a different set of named credentials.
+    auth_type: Literal["credentials", "api_key"] = "credentials"
     example_username: str | None = None
     example_password: str | None = None
+    example_api_key: str | None = None
     force_rediscover: bool = False
     # Discovery-time bypass of the system registry: when set, discovery targets this URL
     # directly instead of resolving system_identifier through config/system_registry.json.
@@ -171,15 +176,25 @@ async def discover_v1(
             ) from exc
         base_url = system_entry.base_url
 
-    if request.is_auth_required and (not request.example_username or not request.example_password):
-        raise HTTPException(
-            400, "is_auth_required=true requires both example_username and example_password"
-        )
-    extra_known_values = (
-        {"username": request.example_username, "password": request.example_password}
-        if request.is_auth_required
-        else None
-    )
+    extra_known_values: dict[str, str] | None = None
+    if request.is_auth_required:
+        if request.auth_type == "credentials":
+            if not request.example_username or not request.example_password:
+                raise HTTPException(
+                    400,
+                    "is_auth_required=true with auth_type=credentials requires both "
+                    "example_username and example_password",
+                )
+            extra_known_values = {
+                "username": request.example_username,
+                "password": request.example_password,
+            }
+        else:  # auth_type == "api_key"
+            if not request.example_api_key:
+                raise HTTPException(
+                    400, "is_auth_required=true with auth_type=api_key requires example_api_key"
+                )
+            extra_known_values = {"apiKey": request.example_api_key}
 
     artifact = await discovery_agent(environment=request.environment).discover(
         request.goal,

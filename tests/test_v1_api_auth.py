@@ -314,6 +314,63 @@ def test_discover_v1_passes_extra_known_values_when_auth_required(monkeypatch, t
     assert received["extra_known_values"] == {"username": "demo", "password": "letmein-2024"}
 
 
+def test_discover_v1_api_key_auth_without_key_returns_400(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _write_system_registry()
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/discover",
+        json={
+            "service_type": "member_savings_balance_lookup",
+            "system_identifier": "legacy-member-servicing-demo",
+            "client_inquiry_id": "client-req-apikey-1",
+            "goal": "Authenticate with an API key and return savings balance",
+            "is_auth_required": True,
+            "auth_type": "api_key",
+        },
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+    assert "example_api_key" in response.json()["detail"]
+
+
+def test_discover_v1_passes_api_key_as_extra_known_values(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _write_system_registry()
+    fake_artifact = _artifact("apikey-cap", "draft")
+    received: dict = {}
+
+    class _FakeAgent:
+        async def discover(
+            self, goal, target_url, member_id,
+            extra_known_values=None, system_identifier=None, run_id=None,
+        ):
+            received["extra_known_values"] = extra_known_values
+            return fake_artifact
+
+    monkeypatch.setattr(v1_routes_module, "discovery_agent", lambda environment="production": _FakeAgent())
+
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/v1/discover",
+        json={
+            "service_type": "member_savings_balance_lookup",
+            "system_identifier": "legacy-member-servicing-demo",
+            "client_inquiry_id": "client-req-apikey-2",
+            "goal": "Authenticate with an API key and return savings balance",
+            "is_auth_required": True,
+            "auth_type": "api_key",
+            "example_api_key": "sk-demo-abc123",
+        },
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 200
+    assert received["extra_known_values"] == {"apiKey": "sk-demo-abc123"}
+
+
 def test_discover_v1_force_rediscover_skips_reuse_and_calls_discovery(monkeypatch, tmp_path):
     """Inverse of the reuse test above: force_rediscover=True must run discovery even though an
     approved match exists."""
