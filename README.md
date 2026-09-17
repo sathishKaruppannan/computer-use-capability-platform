@@ -206,7 +206,10 @@ through `/v1` instead: every route requires HTTP Basic auth against a registered
 capability's `service_type` (`require_service_type` in `src/capability_platform/api/auth.py`),
 and every call is recorded as an `InquiryRecord` (`client_id`, `client_inquiry_id`,
 `service_type`, `system_identifier`, reuse/execution status) via `InquiryTracker` — see
-`src/capability_platform/api/v1_routes.py`.
+`src/capability_platform/api/v1_routes.py` for the route handlers and
+`src/capability_platform/api/schemas/{requests,responses}.py` for the request/response contract
+itself, kept in its own folder so it's one clean, browsable place rather than mixed in with
+handler logic.
 
 Register a client first (password is hashed with PBKDF2 before it touches disk — see
 `access/credentials.py`):
@@ -426,8 +429,14 @@ for curl examples of all three, and
 [docs/ARCHITECTURE_WALKTHROUGH.md](docs/ARCHITECTURE_WALKTHROUGH.md) for the full demo script
 this page walks.
 
-**Client initiate also shows the real target URL and can watch discovery happen live.** The
-`system_identifier` field is a `<select>` populated from `GET /v1/systems`, showing each
+**Client initiate also shows the real target URL and can watch discovery happen live.** A
+"Target resource type" selector comes first — `URL (web)` is the only functional option in this
+demo; `Executable (.exe)`, `URL with iFrame`, and `Other surface (custom)` are shown selectable
+but disable the form with a note explaining why: every surface-specific action already sits
+behind one abstraction, `SurfaceAdapter` (`computer_use/surface.py`, architecture rule #8), with
+`PlaywrightSurface` as its only implementation today, so those options are genuine extension
+points, not a hollow prop. Below that, the `system_identifier` field is a `<select>` populated
+from `GET /v1/systems`, showing each
 option's actual URL — or check "Use a direct URL instead" to bypass the registry and discover
 against any allowlisted URL directly. A "Requires login?" toggle reveals `example_username`/
 `example_password` fields for the auth-required flow below. While discovery runs (30-90s), a live
