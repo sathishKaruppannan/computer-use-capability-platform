@@ -10,11 +10,14 @@ seam. When no approved deterministic capability fits, Claude enters a bounded ob
 loop over an accessibility-first Playwright surface. A successful trace is compiled into an
 artifact, reviewed, and registered. Subsequent calls go directly to deterministic replay.
 
-**What's actually wired up today:** the registry/embedding/reranking piece
+**What's actually wired up today:** the semantic embedding/reranking registry piece
 (`capabilities/registry.py`) is implemented and unit-tested in isolation, but nothing calls it
-yet — `discover`, `replay`, the REST app, and the MCP server are two separate explicit paths
-(discover-by-goal, replay-by-exact-id), not a live goal-routed resolver. Wiring the registry in
-front of `discover`/`replay` is the natural next step, not yet done.
+yet. A simpler, key-based resolver is wired, though: the authenticated REST surface's
+`POST /v1/discover` takes `(service_type, system_identifier)` and checks
+`ArtifactStore.find_approved_by_service_and_system` first — a hit reuses the existing capability
+with zero LLM calls, cross-client, before ever falling back to Claude discovery on a miss. That's
+exact-key reuse, not semantic retrieval; wiring the embedding registry in front of it for
+fuzzier goal matching is the natural next step, not yet done.
 
 The implementation is a modular monolith. That keeps the POC observable and easy to run while
 preserving separable boundaries: agent reasoning, capability resolution, policy, surface control,
@@ -61,8 +64,9 @@ mapped to declared output names and the final success condition must pass before
 The result contract distinguishes: `success` with typed outputs; `business_outcome` with a stable
 domain code such as `MEMBER_NOT_FOUND`; `paused` with an intervention ID; and `failure` with category,
 code, step, expected/observed context, and evidence location. Recoverable conditions declare a
-known recovery — currently `pause` (human dismissal, exercised end-to-end) or `return`/`fail`;
-a bounded `retry` is accepted by the schema but not yet dispatched by the executor (see Cuts).
+known recovery: `pause` (human dismissal, exercised end-to-end), a bounded `retry` (waits and
+re-checks the same checkpoint up to `max_retries` times before falling through to a hard
+failure), or `return`/`fail`.
 An unknown dialog pauses instead of being dismissed blindly.
 Timeout, authentication, target, checkpoint, policy, application, and internal errors are separate
 categories. This prioritizes legitimate runtime states over speculative self-healing.
@@ -180,9 +184,10 @@ skill, and grounded synthesis.
 Deliberately cut: internet-wide MCP discovery/installation, multiple authentication modes, distributed
 queues, production operator streaming, enterprise secrets/RBAC, persistent intervention storage, desktop
 automation, and real multi-tenancy. They add operational breadth but do not improve the load-bearing
-assignment decisions. Resume-state checkpoint verification and schema-driven input validation, listed
-here in an earlier draft as future work, are now implemented (see Determinism & error handling and
-Escalation & handoff). What's still genuinely outstanding: dispatching the declared-but-unwired
-`retry` recovery, artifact signing, a wired approval flow for risky/irreversible steps (today they
-are unconditionally blocked, not confirmable), an accessibility-based desktop adapter, and a
-multi-run evaluation harness that reports primary/fallback locator rates and stability.
+assignment decisions. Resume-state checkpoint verification, schema-driven input validation, the bounded `retry`
+recovery dispatch, and a wired approval gate for risky/irreversible steps (pause, explicit
+`resume(approved=True|False)`, a denial failing hard with `APPROVAL_DENIED` rather than
+proceeding) — all listed here in earlier drafts as future work — are now implemented (see
+Determinism & error handling, Escalation & handoff, and Safety). What's still genuinely
+outstanding: artifact signing, an accessibility-based desktop adapter, and a multi-run evaluation
+harness that reports primary/fallback locator rates and stability.
