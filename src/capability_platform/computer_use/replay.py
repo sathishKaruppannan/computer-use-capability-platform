@@ -23,6 +23,17 @@ from capability_platform.models import (
 from capability_platform.observability.evidence import EvidenceCollector
 from capability_platform.policy.engine import PolicyEngine, PolicyViolation
 
+# Categories a client may safely requeue without a human reviewing first -- a transient timeout
+# is worth one more try as-is. Every other category is a hard stop where retrying the identical
+# request will very likely fail the same way (bad input, denied policy/approval, a locator that's
+# actually broken, ambiguous app state) -- RunError.recoverable stays False for those so the
+# client knows to hold the request for review instead of blindly requeuing it.
+_AUTO_REQUEUEABLE_CATEGORIES = frozenset({ErrorCategory.TIMEOUT})
+
+
+def _recoverable(category: ErrorCategory) -> bool:
+    return category in _AUTO_REQUEUEABLE_CATEGORIES
+
 
 class ReplayEngine:
     """Executes artifact steps exactly as declared. This module has no LLM dependency."""
@@ -138,12 +149,14 @@ class ReplayEngine:
                     category=ErrorCategory.VALIDATION,
                     code="MISSING_INPUT",
                     message=f"Missing required input '{spec.name}'",
+                    recoverable=_recoverable(ErrorCategory.VALIDATION),
                 )
             if value is not None and spec.pattern and not re.fullmatch(spec.pattern, str(value)):
                 return RunError(
                     category=ErrorCategory.VALIDATION,
                     code="INVALID_INPUT",
                     message=f"Input '{spec.name}' does not match required pattern {spec.pattern!r}",
+                    recoverable=_recoverable(ErrorCategory.VALIDATION),
                 )
         return None
 
@@ -187,6 +200,7 @@ class ReplayEngine:
                             message=f"Step {step.id} ({step.risk}) was denied by human review",
                             step_id=step.id,
                             evidence_path=denial_screenshot,
+                            recoverable=_recoverable(ErrorCategory.POLICY),
                         )
                         result.completed_at = datetime.now(UTC)
                         # Let the enclosing try's `finally` emit replay.finished and close the
@@ -356,7 +370,10 @@ class ReplayEngine:
             return result
         except PolicyViolation as exc:
             result.error = RunError(
-                category=ErrorCategory.POLICY, code="POLICY_DENIED", message=str(exc)
+                category=ErrorCategory.POLICY,
+                code="POLICY_DENIED",
+                message=str(exc),
+                recoverable=_recoverable(ErrorCategory.POLICY),
             )
         except StepFailure as exc:
             result.error = RunError(
@@ -365,10 +382,14 @@ class ReplayEngine:
                 message=exc.message,
                 step_id=exc.step_id,
                 evidence_path=exc.screenshot,
+                recoverable=_recoverable(exc.category),
             )
         except Exception as exc:  # noqa: BLE001 - convert unexpected driver errors to result contract
             result.error = RunError(
-                category=ErrorCategory.INTERNAL, code="UNEXPECTED", message=str(exc)
+                category=ErrorCategory.INTERNAL,
+                code="UNEXPECTED",
+                message=str(exc),
+                recoverable=_recoverable(ErrorCategory.INTERNAL),
             )
         finally:
             result.completed_at = result.completed_at or datetime.now(UTC)

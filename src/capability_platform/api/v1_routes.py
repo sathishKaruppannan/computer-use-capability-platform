@@ -17,7 +17,7 @@ from capability_platform.api.schemas.responses import (
     SystemSummary,
 )
 from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
-from capability_platform.models import ExecutionResult
+from capability_platform.models import ExecutionResult, RunStatus
 from capability_platform.runtime import (
     discovery_agent,
     inquiry_tracker,
@@ -170,6 +170,9 @@ async def execute_v1(
         require_service_type(artifact.service_type, credential)
 
     result = await replay_engine().execute(artifact, request.inputs)
+    # Record what actually happened, not just that the call was made -- a reviewer looking at
+    # the audit trail (or a future admin view built on it) needs "failed" to mean the replay
+    # actually failed, matching ExecutionResult.status on the response returned below.
     inquiry_tracker().record(
         InquiryRecord(
             inquiry_id=str(uuid4()),
@@ -179,7 +182,7 @@ async def execute_v1(
             system_identifier=artifact.system_identifier,
             capability_id=artifact.qualified_id,
             reused_existing_capability=True,
-            status="executed",
+            status="failed" if result.status == RunStatus.FAILURE else "executed",
         )
     )
     return result

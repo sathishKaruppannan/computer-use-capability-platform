@@ -131,6 +131,51 @@ HTTP 200
 `memberId` must match `^\d{5}$` (the artifact's own input pattern); `10001`–`10003` and `99999`
 are the demo app's seeded ids (`demo_app/app.py`).
 
+### 1.3b Execute with an input that fails the artifact's own pattern — hard failure
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST \
+  http://127.0.0.1:8000/capabilities/lookup-member-savings-balance.v1/execute \
+  -H 'content-type: application/json' -d '{"inputs":{"memberId":"bad-id"}}'
+```
+
+```json
+{
+  "run_id": "476796dd-9330-46a4-8d00-2a7e65e5ec06",
+  "status": "failure",
+  "capability_id": "lookup-member-savings-balance.v1",
+  "outputs": {},
+  "business_code": null,
+  "error": {
+    "category": "validation",
+    "code": "INVALID_INPUT",
+    "message": "Input 'memberId' does not match required pattern '^\\d{5}$'",
+    "step_id": null,
+    "expected": null,
+    "observed": null,
+    "evidence_path": null,
+    "recoverable": false
+  },
+  "intervention_id": null,
+  "started_at": "2026-09-17T16:18:01.035218Z",
+  "completed_at": "2026-09-17T16:18:01.035468Z"
+}
+HTTP 200
+```
+
+`status: "failure"` is the client's unambiguous "this request did not succeed" signal. `error`
+is non-null exactly when `status == "failure"` and always carries a human-readable `message` —
+that alone is enough for a client to surface something readable to an operator without knowing
+the rest of the contract. `error.recoverable` is the machine-actionable next step: `false` (as
+here — the same bad `memberId` will fail identically every time) means hold the request for
+human review before requeuing it; `true` (reserved for transient conditions such as a step
+timeout, `error.category == "timeout"`) means the client may safely resubmit the identical
+request without a human looking at it first. This never depends on HTTP status — `execute`
+returns `200` for every `ExecutionResult`, including a failed one; `status`/`error` inside the
+body is the real signal, not the HTTP status code. See `RunError` and `ExecutionResult` in
+`capability_platform/models.py` for the full field-by-field contract, and `_recoverable` in
+`computer_use/replay.py` for which categories are eligible.
+
 ### 1.4 Execute an unknown capability id — 404
 
 ```bash
