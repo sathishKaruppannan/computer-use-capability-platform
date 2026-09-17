@@ -99,6 +99,24 @@ discover-*or*-reuse, keyed on `(service_type, system_identifier)`, not on the fr
 This is also why it's cross-client: the second caller to ask for the same pair reuses whatever the
 *first* caller's discovery produced, even if they're different clients entirely.
 
+**`force_rediscover: true` bypasses this resolver check entirely** — the request skips
+`find_approved_by_service_and_system` and always runs fresh discovery, then `ArtifactStore.save()`
+overwrites the same `capability_id` in place. This is the "update again with LLM" path: a way to
+refresh an already-approved capability without hand-editing its file or deleting it first.
+**`target_url` bypasses the *other* half** — instead of resolving `system_identifier` through
+`config/system_registry.json`, discovery targets the given URL directly (still subject to
+`self.policy.authorize_url()`, unchanged). `system_identifier` is still required either way — it's
+the artifact's `id`-derivation and reuse key regardless of where the URL came from.
+
+**Discovery can now also traverse a login gate.** `is_auth_required: true` plus
+`example_username`/`example_password` on the request makes Claude discover the login form
+itself — not a hardcoded login step — the same observe→decide→act loop, just with credentials
+available to type when a login form is the first thing it sees. The compiled artifact never
+retains the literal credential: only `{{username}}`/`{{password}}` placeholders, exactly like
+`{{memberId}}` already worked. Real replay calls supply their own credentials independently, via
+the same already-generic `ReplayEngine._render()` substitution — zero replay-engine changes were
+needed for this.
+
 ### Flow C — no `capability_id`, via CLI `discover` or legacy `POST /discover`: always fresh
 
 Both of these **always** run a fresh Claude discovery — no resolver, no reuse check, bypasses
@@ -141,3 +159,14 @@ for exact request/response shapes.
 7. **Close on §3.3's gotcha** from the REST test doc if the audience is technical — it's a good,
    honest example of a real migration-era compatibility gap rather than a polished, everything-
    works-perfectly story.
+8. **The real thing, live** — this is the moment that actually lands "Claude discovers a UI flow
+   once": in the dashboard, pick `legacy-member-servicing-demo-secure` from the system picker
+   (or the header link to preview the target app first — it's a login form, not the search page),
+   check "Requires login?", and run discover. Watch the **live progress panel** stream each step
+   as Claude decides it — action, locator strategy/value, reasoning — while a real Chromium
+   window shows it typing into the login form and signing in, entirely on its own (§9 in the REST
+   test doc has the exact curl version and real captured artifact). Point out the compiled
+   artifact afterward: `{{username}}`/`{{password}}` placeholders, never the literal credential —
+   then execute it, supplying credentials as plain `inputs`, same mechanism as `memberId`, no
+   relation to whatever was used during discovery. Toggle "Force re-discover" and run it again to
+   show the "update with a fresh LLM pass" path.

@@ -426,6 +426,26 @@ for curl examples of all three, and
 [docs/ARCHITECTURE_WALKTHROUGH.md](docs/ARCHITECTURE_WALKTHROUGH.md) for the full demo script
 this page walks.
 
+**Client initiate also shows the real target URL and can watch discovery happen live.** The
+`system_identifier` field is a `<select>` populated from `GET /v1/systems`, showing each
+option's actual URL — or check "Use a direct URL instead" to bypass the registry and discover
+against any allowlisted URL directly. A "Requires login?" toggle reveals `example_username`/
+`example_password` fields for the auth-required flow below. While discovery runs (30-90s), a live
+progress panel polls `GET /runs/{run_id}/events` and streams each step as Claude decides it —
+action, locator, reasoning — instead of just a final result. "Force re-discover" re-runs
+discovery against an already-approved capability instead of reusing it, updating it in place. A
+"Test app" section previews the target demo app in an iframe (a manual preview only — not a live
+view of the separate, Playwright-controlled automation browser).
+
+**Auth-required discovery, for real.** `demo_app/app.py` has a second area, `/secure/*`
+(credentials `demo` / `letmein-2024`, obviously a demo fixture, not a real secret), gating the
+same member-search flow behind a login form — registered as a second system,
+`legacy-member-servicing-demo-secure`, in `config/system_registry.json`. Claude discovers the
+login form itself, the same observe→decide→act loop as everything else, and the compiled
+artifact only ever retains `{{username}}`/`{{password}}` placeholders — never the literal
+credential. See [docs/REST_API_TEST_SCENARIOS.md §9](docs/REST_API_TEST_SCENARIOS.md#9-auth-required-discovery-login-gated-legacy-app)
+for the full walkthrough with real captured output.
+
 ## Tests
 
 ```bash

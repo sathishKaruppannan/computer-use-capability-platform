@@ -958,6 +958,201 @@ demonstrates.
 
 ---
 
+## 9. Auth-required discovery (login-gated legacy app)
+
+A second demo target, `legacy-member-servicing-demo-secure` (`config/system_registry.json`),
+gates the same demo app behind a login form (`demo_app/app.py`'s `/secure/*` routes, demo
+credentials `demo` / `letmein-2024`). Claude discovers the login form itself the same way it
+discovers everything else — no hardcoded login step — then continues to the goal. Every response
+below is real, captured live, except §9.6 (proven instead by a unit test against a fake
+discovery agent, to avoid spending an extra real Claude call on logic already covered live in
+§9.3-9.5).
+
+### 9.1 `GET /v1/systems` — see both registered targets and their real URLs
+
+```bash
+curl -s http://127.0.0.1:8000/v1/systems
+```
+
+```json
+{
+  "systems": [
+    {
+      "system_identifier": "legacy-member-servicing-demo",
+      "base_url": "http://127.0.0.1:8001",
+      "vendor": "Interface Demo",
+      "product": "Legacy Member Servicing",
+      "description": "Demo legacy member servicing app used for savings balance lookups"
+    },
+    {
+      "system_identifier": "legacy-member-servicing-demo-secure",
+      "base_url": "http://127.0.0.1:8001/secure",
+      "vendor": "Interface Demo",
+      "product": "Legacy Member Servicing (Auth-Required)",
+      "description": "Same demo app behind a login gate -- exercises Claude discovering and completing a login form before reaching the savings-balance flow"
+    }
+  ]
+}
+HTTP 200
+```
+
+Unauthenticated (unlike the rest of `/v1`) — the registry holds no secrets, and a client needs
+this just to find a valid `system_identifier` before it can call anything else.
+
+### 9.2 `is_auth_required: true` without credentials — 400
+
+```bash
+curl -s -w '\nHTTP %{http_code}\n' -X POST http://127.0.0.1:8000/v1/discover \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
+    "service_type": "member_savings_balance_lookup",
+    "system_identifier": "legacy-member-servicing-demo-secure",
+    "client_inquiry_id": "x", "goal": "g", "is_auth_required": true
+  }'
+```
+
+```json
+{ "detail": "is_auth_required=true requires both example_username and example_password" }
+HTTP 400
+```
+
+### 9.3 Real discovery: Claude finds the login form, logs in, continues to the goal
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/discover \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
+    "service_type": "member_savings_balance_lookup",
+    "system_identifier": "legacy-member-servicing-demo-secure",
+    "client_inquiry_id": "live-progress-req-3",
+    "goal": "Log in, then find member 10001 and return savings balance",
+    "is_auth_required": true,
+    "example_username": "demo",
+    "example_password": "letmein-2024",
+    "force_rediscover": true
+  }'
+```
+
+```json
+{
+  "capability_id": "lookup-savings-balance-legacy-member-servicing-demo-secure.v1",
+  "inquiry_id": "c390d4ff-18f8-4a12-b419-5c2a2b0e1403",
+  "reused_existing_capability": false,
+  "lifecycle": "draft",
+  "approval_required": true
+}
+HTTP 200
+```
+
+The `id` is derived from `system_identifier` (`lookup-savings-balance-legacy-member-servicing-demo-secure`)
+rather than the hardcoded `lookup-member-savings-balance` the plain (non-auth) system produces —
+this is what lets the two coexist as independent, independently-approvable capabilities.
+
+Reviewing it (`GET /v1/capabilities/{id}/review`, admin) shows exactly what Claude actually did —
+real captured steps, with the credential **values** templated, never baked in literally:
+
+```json
+{
+  "inputs": [
+    { "name": "memberId", "type": "string", "sensitive": false },
+    { "name": "username", "type": "string", "sensitive": false },
+    { "name": "password", "type": "string", "sensitive": true }
+  ],
+  "steps": [
+    { "id": "step-1", "action": "type", "value": "{{username}}", "description": "Fill in the username field with the provided credential: demo" },
+    { "id": "step-2", "action": "type", "value": "{{password}}", "description": "Fill in the password field with the provided credential" },
+    { "id": "step-3", "action": "click", "description": "Submit the login form by clicking the Sign In button" },
+    { "id": "step-4", "action": "type", "value": "{{memberId}}", "description": "Enter member ID 10001 in the Member Number search field" },
+    { "id": "step-5", "action": "click", "description": "Click the Search button to look up member 10001" },
+    { "id": "step-6", "action": "click", "description": "Click 'Open Accounts' button to access the accounts information including savings balance" },
+    { "id": "step-7", "action": "extract", "output": "savingsBalance", "description": "Extract the savings balance ($4,250.25) from the Primary Savings row in the accounts table" }
+  ]
+}
+```
+
+Real, direct proof the password never leaks anywhere it's persisted —
+`grep -c letmein-2024 artifacts/lookup-savings-balance-legacy-member-servicing-demo-secure.v1.json`
+→ `0`. The username *is* visible in `step-1`'s description (usernames aren't treated as secrets
+here, only `password`-keyed literals are scrubbed) — that's intentional, not an oversight.
+
+### 9.4 Approve, then execute with credentials supplied independently at replay time
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/capabilities/lookup-savings-balance-legacy-member-servicing-demo-secure.v1/approve \
+  -u demo-client:secret123
+```
+```json
+{ "capability_id": "lookup-savings-balance-legacy-member-servicing-demo-secure.v1", "lifecycle": "approved" }
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/capabilities/lookup-savings-balance-legacy-member-servicing-demo-secure.v1/execute \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
+    "client_inquiry_id": "live-progress-exec-1",
+    "inputs": {"memberId": "10002", "username": "demo", "password": "letmein-2024"}
+  }'
+```
+```json
+{
+  "run_id": "42832f17-8d38-412a-b80b-927da6b2fcb5",
+  "status": "success",
+  "capability_id": "lookup-savings-balance-legacy-member-servicing-demo-secure.v1",
+  "outputs": { "savingsBalance": 1220.0 },
+  "business_code": null, "error": null, "intervention_id": null,
+  "started_at": "2026-09-17T02:19:19.069124Z", "completed_at": "2026-09-17T02:19:20.166743Z"
+}
+HTTP 200
+```
+
+`ReplayEngine._render()` — already fully generic, zero changes needed for this feature —
+substitutes `{{username}}`/`{{password}}`/`{{memberId}}` from these `inputs`, completely
+independent of whatever example credential was used at discovery time. Real captured proof the
+password is masked here too (the *existing* `Redactor` mechanism, not the new discovery-time
+scrub above):
+```
+$ grep letmein-2024 evidence/runs/42832f17-8d38-412a-b80b-927da6b2fcb5/events.jsonl
+(no output)
+$ grep -o REDACTED_PASSWORD evidence/runs/42832f17-8d38-412a-b80b-927da6b2fcb5/events.jsonl
+"password": "[REDACTED_PASSWORD]"
+```
+
+### 9.5 `force_rediscover: true` — update a capability with a fresh LLM pass
+
+Calling `/v1/discover` again for an already-approved `(service_type, system_identifier)` pair
+normally just reuses it (§4.1). `force_rediscover: true` skips that check and always runs
+discovery, overwriting the same `capability_id` in place:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/discover \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
+    "service_type": "member_savings_balance_lookup",
+    "system_identifier": "legacy-member-servicing-demo",
+    "client_inquiry_id": "x", "goal": "Find member 10001 and return savings balance",
+    "force_rediscover": true
+  }'
+```
+Real captured result — a genuine second discovery ran (`reused_existing_capability: false`) for
+a pair that was already approved, and produced the *same* `capability_id` as before, not a new
+one — this section's §9.3 example above is itself the result of exactly this call.
+
+### 9.6 Direct-URL bypass — discover without a registered `system_identifier`
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/discover \
+  -u demo-client:secret123 -H 'content-type: application/json' -d '{
+    "service_type": "member_savings_balance_lookup",
+    "system_identifier": "any-label-you-like",
+    "client_inquiry_id": "x", "goal": "Find member 10001 and return savings balance",
+    "target_url": "http://127.0.0.1:8001/secure"
+  }'
+```
+`target_url`, when given, is used directly instead of resolving `system_identifier` through
+`config/system_registry.json` — `system_identifier` is still required (it's the resolver's
+reuse/artifact-id key) but no longer needs to be pre-registered.
+`self.policy.authorize_url(target_url)` (`agent/discovery.py`) still runs regardless — a bypass
+URL outside `config/policy.json`'s `allowedHosts` fails the same way an unregistered
+`system_identifier` does today, just one layer later.
+
+---
+
 ## Appendix: full scenario index
 
 | # | Scenario | Auth | Expected | Verified |
@@ -992,3 +1187,9 @@ demonstrates.
 | 7 | One-by-one: reset → pending → review → approve → empty | valid, admin | 200 at every step | ✅ live |
 | 8.1 | `GET /runs/{run_id}/events` | none | 200, events list | ✅ live |
 | 8.2 | `POST /admin/seed-demo-capabilities` | none | 200, both ids seeded | ✅ live |
+| 9.1 | `GET /v1/systems` | none | 200, both systems | ✅ live |
+| 9.2 | `is_auth_required` without credentials | valid | 400 | ✅ live |
+| 9.3 | Real login discovery against `-secure` | valid, admin | 200, draft, login steps templated | ✅ live |
+| 9.4 | Approve + execute with independent replay credentials | valid, admin | 200 `success`, balance correct | ✅ live |
+| 9.5 | `force_rediscover: true` | valid, admin | 200, fresh discovery, same id | ✅ live |
+| 9.6 | `target_url` bypass, unregistered `system_identifier` | valid, admin | 200, no 400 | ✅ unit test (`test_discover_v1_target_url_bypasses_registry`) |
