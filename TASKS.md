@@ -2004,3 +2004,47 @@ convention.
 uv run pytest -q -m "not e2e"   →  221 passed, 21 deselected   (up from 213 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 18 log — synthesis silently dropped a correctly-computed fact
+
+User reported the chatbot response for "account id 10001 balance" was just `Completed
+'retrieve_account_balance'.` -- no balance shown -- even though the trace panel underneath it
+showed `Outputs aggregated: {"savingsBalance": 4250.25}` and `Capability executed ... success`
+right there. The value was computed correctly; it just never reached the response text.
+
+Root cause, confirmed live: `GroundedSynthesizer.synthesize_agent_result()`'s SUCCESS branch
+built its fact list by iterating `intent.required_outputs` (an LLM-derived field on `TaskIntent`)
+and only including an `outputs` entry if its key matched one of those names exactly. For this
+goal, the model named the required output `"balance"` -- reasonable, but not the plan's own key,
+`"savingsBalance"` -- so the filter matched nothing and the fact silently vanished, even though
+`outputs` (the deterministic aggregator's result, exact-key lookups against the PLAN's own
+`produced_outputs`, no LLM involved) had the correct value the whole time.
+
+Fixed by no longer filtering through `intent.required_outputs` at all -- the SUCCESS branch now
+lists every key in `outputs` directly, since that dict is already the trustworthy, complete,
+canonical result. This doesn't reopen anything about the "no LLM value reaches the response"
+guarantee (`outputs` was always the grounding source; `required_outputs` was only ever used to
+*narrow* it, and narrowing it through an LLM-derived list was the actual bug).
+
+New tests: both real-world shapes of the mismatch (`required_outputs` empty; `required_outputs`
+naming the field differently than the plan's own key) now assert the fact still appears.
+
+**Live-verified with the user's exact reported goal**, same isolated servers/data pattern as
+every other phase:
+```
+"account id 10001 balance"
+  intent.required_outputs: [{"name": "balance", ...}]   <- the actual mismatch, confirmed
+  outputs: {"savingsBalance": 4250.25}
+  before: "Completed 'retrieve_account_balance'. "
+  after:  "Completed 'retrieve_account_balance'. savingsBalance: 4250.25"
+```
+Regression-checked a normal-phrasing goal ("Find member 10002 and return savings balance") still
+produces the same correct text as before. `git status artifacts/ data/ config/` confirmed clean
+in the real repo throughout.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  223 passed, 21 deselected   (up from 221 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```

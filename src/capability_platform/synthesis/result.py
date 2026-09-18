@@ -46,11 +46,16 @@ class GroundedSynthesizer:
             # intent.required_outputs below, so this doesn't reopen the no-LLM-parameter guarantee.
             return intent.conversational_reply or "Got it -- let me know if there's anything else I can help with."
         if status == RunStatus.SUCCESS:
-            facts = ", ".join(
-                f"{name}: {outputs[name]}"
-                for name in (output.name for output in intent.required_outputs)
-                if name in outputs
-            )
+            # Iterate `outputs` itself, not `intent.required_outputs` -- `outputs` is the
+            # deterministic aggregator's canonical result (agent/orchestrator.py::_aggregate,
+            # exact-key lookups against the PLAN's produced_outputs, no LLM involved). A real bug,
+            # found live: `intent.required_outputs` is an LLM-derived field, and for a terse goal
+            # ("account id 10001 balance") it can come back empty or differently-named than the
+            # plan's own output key -- filtering through it silently dropped a fact that was
+            # already computed correctly, producing "Completed '...'. " with nothing after it.
+            # `outputs` is already the trustworthy, complete set; nothing about grounding is lost
+            # by not re-filtering it through an LLM-derived list.
+            facts = ", ".join(f"{name}: {value}" for name, value in outputs.items())
             return f"Completed '{intent.intent}'. {facts}"
         if status == RunStatus.BUSINESS_OUTCOME:
             return f"The request returned a known business outcome: {business_code}."
