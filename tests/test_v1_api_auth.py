@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from capability_platform.access.credentials import JSONCredentialStore, hash_password
 from capability_platform.access.models import ClientCredential, InquiryRecord
+from capability_platform.access.tenant_credentials import JSONTenantCredentialStore
 from capability_platform.access.tracking import JSONInquiryTracker
 from capability_platform.agent.models import (
     CapabilityCandidate,
@@ -120,6 +121,7 @@ def _configure(monkeypatch, tmp_path):
     # piece of state is isolated to tmp_path -- found the hard way when _find_semantic_reuse's
     # agent_orchestrator() call did exactly that before the mocks below existed.
     monkeypatch.setattr(global_settings, "evidence_dir", tmp_path / "evidence")
+    monkeypatch.setattr(global_settings, "tenant_credential_dir", tmp_path / "tenant_credentials")
 
 
 def _no_semantic_match(monkeypatch):
@@ -636,6 +638,131 @@ def test_approve_v1_succeeds_for_admin(monkeypatch, tmp_path):
 
     reloaded = ArtifactStore(global_settings.artifact_dir).load("draft-cap.v1")
     assert reloaded.lifecycle == "approved"
+
+
+def _login_gated_artifact(id_: str, lifecycle: str) -> CapabilityArtifact:
+    return CapabilityArtifact(
+        id=id_,
+        name="Login-gated capability",
+        description="test",
+        lifecycle=lifecycle,
+        application=ApplicationBinding(vendor="x", product="y", base_url="http://127.0.0.1:8001/secure"),
+        inputs=[
+            ParameterSpec(name="memberId", type="string", description="x"),
+            ParameterSpec(name="username", type="string", description="login username"),
+            ParameterSpec(name="password", type="string", description="login password", sensitive=True),
+        ],
+        outputs=[OutputSpec(name="out", type="string", description="x")],
+        steps=[],
+        success=Checkpoint(
+            kind="visible",
+            target=Target(primary=Locator(strategy="text", value="x"), rationale="x"),
+        ),
+        discovered_by="test",
+    )
+
+
+def test_approve_v1_with_credentials_saves_them_for_that_client(monkeypatch, tmp_path):
+    """The combined approve+save-credentials convenience: an admin can approve a login-gated
+    draft and immediately hand it credentials for one client in a single call."""
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    ArtifactStore(global_settings.artifact_dir).save(_login_gated_artifact("secure-cap", "draft"))
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/capabilities/secure-cap.v1/approve",
+        json={"client_id": "demo-client", "username": "demo", "password": "letmein-2024"},
+        auth=("admin-client", "correct-pw"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["lifecycle"] == "approved"
+    assert body["credentials_saved_for_client"] == "demo-client"
+
+    stored = JSONTenantCredentialStore(global_settings.tenant_credential_dir).get("secure-cap.v1", "demo-client")
+    assert stored is not None
+    assert stored.username == "demo"
+    assert stored.password == "letmein-2024"
+
+
+def test_approve_v1_without_credentials_leaves_credentials_saved_for_client_none(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("draft-cap", "draft"))
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/capabilities/draft-cap.v1/approve", auth=("admin-client", "correct-pw")
+    )
+    assert response.status_code == 200
+    assert response.json()["credentials_saved_for_client"] is None
+
+
+def test_save_credentials_v1_requires_admin(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=False)
+    ArtifactStore(global_settings.artifact_dir).save(_login_gated_artifact("secure-cap", "approved"))
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/capabilities/secure-cap.v1/credentials",
+        json={"client_id": "demo-client", "username": "demo", "password": "letmein-2024"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 403
+
+
+def test_save_credentials_v1_rejects_capability_not_yet_approved(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    ArtifactStore(global_settings.artifact_dir).save(_login_gated_artifact("secure-cap", "draft"))
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/capabilities/secure-cap.v1/credentials",
+        json={"client_id": "demo-client", "username": "demo", "password": "letmein-2024"},
+        auth=("admin-client", "correct-pw"),
+    )
+    assert response.status_code == 403
+
+
+def test_save_credentials_v1_rejects_capability_without_credential_inputs(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("open-cap", "approved"))
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/capabilities/open-cap.v1/credentials",
+        json={"client_id": "demo-client", "username": "demo", "password": "letmein-2024"},
+        auth=("admin-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+
+
+def test_save_credentials_v1_succeeds_for_a_second_client_on_an_already_approved_capability(
+    monkeypatch, tmp_path
+):
+    """The multi-tenant reuse point: a second client gets its own stored credentials for the
+    same already-approved capability, without re-approving it."""
+    _configure(monkeypatch, tmp_path)
+    _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
+    ArtifactStore(global_settings.artifact_dir).save(_login_gated_artifact("secure-cap", "approved"))
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/capabilities/secure-cap.v1/credentials",
+        json={"client_id": "second-client", "username": "second", "password": "second-pw"},
+        auth=("admin-client", "correct-pw"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"capability_id": "secure-cap.v1", "client_id": "second-client", "saved": True}
+
+    stored = JSONTenantCredentialStore(global_settings.tenant_credential_dir).get("secure-cap.v1", "second-client")
+    assert stored is not None
+    assert stored.username == "second"
 
 
 def test_list_pending_v1_requires_admin(monkeypatch, tmp_path):

@@ -32,6 +32,16 @@ class ClarificationRequiredError(RuntimeError):
         super().__init__(self.question)
 
 
+class SensitiveInfoRequestedError(RuntimeError):
+    """Raised by the orchestrator (not IntentAnalyzer itself) when
+    TaskIntent.requests_sensitive_info is true -- a guardrail, not a planning failure: the
+    request is refused outright rather than attempted, resolved, or partially answered."""
+
+    def __init__(self, reason: str | None) -> None:
+        self.reason = reason or "This information is not allowed to be provided."
+        super().__init__(f"Not allowed to provide this information: {self.reason}")
+
+
 class IntentAnalyzer:
     def __init__(self, provider: LLMProvider, fallback_provider: LLMProvider | None = None) -> None:
         self.provider = provider

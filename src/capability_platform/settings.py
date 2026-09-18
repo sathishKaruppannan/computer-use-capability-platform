@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     evidence_dir: Path = Path("evidence")
     credential_dir: Path = Path("data/credentials")
     tracking_dir: Path = Path("data/tracking")
+    tenant_credential_dir: Path = Path("data/tenant_credentials")
     system_registry_path: Path = Path("config/system_registry.json")
 
 

@@ -11,6 +11,8 @@ data/credentials/*.json
 !data/credentials/.gitkeep
 data/tracking/*.json
 !data/tracking/.gitkeep
+data/tenant_credentials/*.json
+!data/tenant_credentials/.gitkeep
 test-results/
 .DS_Store
 

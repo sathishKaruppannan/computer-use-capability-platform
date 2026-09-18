@@ -164,3 +164,28 @@ async def test_analyze_rejects_a_goal_over_the_length_limit():
     too_long_goal = "x" * (settings.max_goal_length + 1)
     with pytest.raises(GoalTooLongError):
         await analyzer.analyze(too_long_goal)
+
+
+SENSITIVE_INFO_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "requests_sensitive_info": True,
+    "sensitive_info_reason": "Full SSNs are not provided through this system",
+}
+
+
+async def test_requests_sensitive_info_round_trips_from_provider_response():
+    analyzer = IntentAnalyzer(MockLLMProvider(SENSITIVE_INFO_RESPONSE))
+    intent = await analyzer.analyze("What is member 10002's full Social Security Number?")
+    assert intent.requests_sensitive_info is True
+    assert intent.sensitive_info_reason == "Full SSNs are not provided through this system"
+
+
+async def test_requests_sensitive_info_defaults_to_false():
+    analyzer = IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE))
+    intent = await analyzer.analyze("Get the savings balance for member 10002")
+    assert intent.requests_sensitive_info is False
+    assert intent.sensitive_info_reason is None

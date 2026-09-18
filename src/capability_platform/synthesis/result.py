@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 from capability_platform.models import ExecutionResult, RunStatus
 
 if TYPE_CHECKING:
-    from capability_platform.agent.models import TaskIntent
+    from capability_platform.agent.models import CapabilityExecutionResult, TaskIntent
 
 
 class GroundedSynthesizer:
@@ -28,11 +28,16 @@ class GroundedSynthesizer:
         outputs: dict[str, Any],
         status: RunStatus,
         business_code: str | None = None,
+        execution: "list[CapabilityExecutionResult] | None" = None,
     ) -> str:
         """Same contract as synthesize(): formats only canonical values already computed by the
         deterministic aggregator, via exact-key interpolation. Deliberately takes no LLMProvider
         and makes no LLM call -- there is no parameter here through which any provider's raw
-        output (however adversarial) could reach a numeric/entity value in the returned text."""
+        output (however adversarial) could reach a numeric/entity value in the returned text.
+        `execution` is optional and, like everything else here, only ever read from -- the extra
+        step-level detail it carries (a freshly discovered artifact's id, a specific error
+        message) is canonical fact already computed elsewhere, not derived here."""
+        execution = execution or []
         if status == RunStatus.SUCCESS:
             facts = ", ".join(
                 f"{name}: {outputs[name]}"
@@ -43,5 +48,16 @@ class GroundedSynthesizer:
         if status == RunStatus.BUSINESS_OUTCOME:
             return f"The request returned a known business outcome: {business_code}."
         if status == RunStatus.PAUSED:
-            return "One or more steps are awaiting human approval or a newly discovered capability's approval."
+            for result in execution:
+                if result.status == RunStatus.PAUSED and result.raw_execution_result:
+                    artifact_id = result.raw_execution_result.get("artifact_id")
+                    if artifact_id and result.raw_execution_result.get("lifecycle") == "draft":
+                        return (
+                            f"A new capability draft ('{artifact_id}') has been created for this "
+                            "goal. Please ask your admin to review and approve it, then try again."
+                        )
+            return "One or more steps are awaiting human approval. Please try again once an admin has resolved this."
+        for result in execution:
+            if result.status == RunStatus.FAILURE and result.error:
+                return f"Could not complete '{intent.intent}': {result.error.message}"
         return f"Could not complete '{intent.intent}': see execution details for the failing step."

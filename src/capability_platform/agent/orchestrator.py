@@ -18,6 +18,7 @@ from capability_platform.agent.intent_analyzer import (
     ClarificationRequiredError,
     IntentAnalysisError,
     IntentAnalyzer,
+    SensitiveInfoRequestedError,
 )
 from capability_platform.agent.models import (
     AgentResult,
@@ -90,9 +91,11 @@ class AgentOrchestrator:
         # anything about credentials or auth itself.
         self.resolution_authorizer = resolution_authorizer
 
-    async def execute_goal(self, goal: str, context: dict[str, Any] | None = None) -> AgentResult:
+    async def execute_goal(
+        self, goal: str, context: dict[str, Any] | None = None, run_id: str | None = None
+    ) -> AgentResult:
         context = context or {}
-        run_id = str(uuid4())
+        run_id = run_id or str(uuid4())
         evidence = EvidenceCollector(self.evidence_root, run_id)
         started_at = datetime.now(UTC)
 
@@ -133,7 +136,7 @@ class AgentOrchestrator:
                 )
             else:
                 inputs = self._collect_inputs(step, intent, context)
-                result = await self.executor.execute(resolution, inputs)
+                result = await self.executor.execute(resolution, inputs, client_id=context.get("client_id"))
             evidence.event(
                 "capability.executed", step_id=step.id, descriptor_id=result.descriptor_id, status=str(result.status)
             )
@@ -143,7 +146,9 @@ class AgentOrchestrator:
         evidence.event("result.aggregated", outputs=outputs)
         status = self._overall_status(execution)
         business_code = self._first_business_code(execution)
-        synthesized = GroundedSynthesizer.synthesize_agent_result(intent, outputs, status, business_code)
+        synthesized = GroundedSynthesizer.synthesize_agent_result(
+            intent, outputs, status, business_code, execution=execution
+        )
         evidence.event("result.synthesized", text=synthesized, status=str(status))
 
         return AgentResult(
@@ -217,6 +222,13 @@ class AgentOrchestrator:
             evidence.event("intent.clarification_required", question=intent.clarification_question)
             raise ClarificationRequiredError(intent.clarification_question)
 
+        if intent.requests_sensitive_info:
+            # Guardrail, not a planning failure: refuse outright, before any plan/resolution
+            # attempt -- never partially answer a goal that also asks for something legitimate
+            # alongside a sensitive-info request (the intent prompt is explicit about this).
+            evidence.event("guardrail.sensitive_info_refused", reason=intent.sensitive_info_reason)
+            raise SensitiveInfoRequestedError(intent.sensitive_info_reason)
+
         plan = self.planner.plan(intent)
         evidence.event(
             "plan.created", plan_id=plan.id, step_count=len(plan.steps), steps=[step.id for step in plan.steps]
@@ -267,17 +279,45 @@ class AgentOrchestrator:
         # through to discover()'s own original hardcoded defaults rather than naming an artifact
         # "unknown".
         known_intent = intent.intent != "unknown"
-        artifact = await agent.discover(
-            resolution.discovery_goal or step.description,
-            target_url,
-            member_id,
-            system_identifier=context.get("system_identifier"),
-            capability_hint=intent.intent if known_intent else None,
-            name_hint=intent.intent.replace("_", " ").title() if known_intent else None,
-            description_hint=step.description if known_intent else None,
-            output_type_hint=output_type_hint,
-            output_description_hint=output_description_hint,
-        )
+        try:
+            artifact = await agent.discover(
+                resolution.discovery_goal or step.description,
+                target_url,
+                member_id,
+                system_identifier=context.get("system_identifier"),
+                capability_hint=intent.intent if known_intent else None,
+                name_hint=intent.intent.replace("_", " ").title() if known_intent else None,
+                description_hint=step.description if known_intent else None,
+                output_type_hint=output_type_hint,
+                output_description_hint=output_description_hint,
+            )
+        except Exception as exc:  # noqa: BLE001 - any discovery failure becomes a clean FAILURE result
+            # No existing capability matched AND live discovery itself couldn't produce a
+            # working one -- e.g. the goal doesn't correspond to anything reachable on the
+            # target, or discovery hit an unexpected page state mid-flow. Must never propagate
+            # as an unhandled exception (a raw 500 was observed for real here during live
+            # verification, for a goal with no sensible business meaning on the demo app): a
+            # goal this system genuinely cannot fulfill is still a clean, typed FAILURE, not a
+            # crash. The redacted step-by-step detail survives in this run's own evidence trace
+            # (GET /runs/{run_id}/events) regardless -- discover() always records it before
+            # re-raising -- so nothing about the failure is lost, only kept out of the raw
+            # exception text this message would otherwise echo back to the caller.
+            return CapabilityExecutionResult(
+                step_id=step.id,
+                descriptor_id="",
+                status=RunStatus.FAILURE,
+                error=RunError(
+                    category=ErrorCategory.INTERNAL,
+                    code="DISCOVERY_FAILED",
+                    message=(
+                        f"Could not find or create a capability for this goal ({type(exc).__name__}). "
+                        "The goal may not correspond to anything reachable on the target system. See "
+                        "this run's evidence trace (GET /runs/{run_id}/events) for step-by-step detail."
+                    ),
+                    step_id=step.id,
+                    recoverable=False,
+                ),
+            )
 
         # Safety guard: ClaudeDiscoveryAgent's own artifact-id derivation can collide with an
         # already-approved capability's id (observed for real during Phase 8 -- a resolver miss
