@@ -31,7 +31,20 @@ risk: 'read_only' for pure lookups, 'reversible' for straightforward edits, 'ris
 confidence: how sure you are of this whole classification, 0 to 1.
 missing_required_inputs: names of anything the goal clearly needs but doesn't state.
 
-Worked example -- follow this naming exactly for an equivalent goal:
+sub_goals -- ONLY when the goal describes multiple genuinely distinct actions in sequence (e.g.
+"find member X, do A, then do B"), not for a single action described in several clauses. When
+present, list each action in execution order, each with:
+- description: a short, self-contained instruction for that one action alone.
+- operation: 'read' or 'write', for that action specifically (a compound goal often mixes both).
+- required_inputs / produced_outputs: lowerCamelCase names (same convention as entities/
+  required_outputs above) for just what that one action needs/produces. A later action's
+  required_inputs may repeat an earlier action's own input (e.g. memberId needed by every step),
+  not just that earlier action's produced_outputs -- do not assume outputs silently carry
+  forward. Leave sub_goals empty (the default) for any single-action goal, including one phrased
+  with an "and" that's really one action (e.g. "find and return the balance" is still one action:
+  intent=retrieve_account_balance, no sub_goals needed).
+
+Worked example 1 -- a single-action goal, follow this naming exactly for an equivalent goal:
 Goal: "Get the savings balance for member 10002"
 {
   "intent": "retrieve_account_balance",
@@ -44,6 +57,41 @@ Goal: "Get the savings balance for member 10002"
   "required_outputs": [{"name": "savingsBalance", "type": "number"}],
   "risk": "read_only",
   "confidence": 0.95
+}
+
+Worked example 2 -- a compound goal, follow this shape for an equivalent goal:
+Goal: "Find member 10001, retrieve the savings balance, and create a servicing note"
+{
+  "intent": "retrieve_balance_and_create_note",
+  "domain": "member_servicing",
+  "operation": "write",
+  "entities": [{"name": "memberId", "value": "10001", "type": "string"}],
+  "required_outputs": [
+    {"name": "savingsBalance", "type": "number"},
+    {"name": "noteId", "type": "string"}
+  ],
+  "risk": "reversible",
+  "confidence": 0.85,
+  "sub_goals": [
+    {
+      "description": "Look up member 10001.",
+      "operation": "read",
+      "required_inputs": ["memberId"],
+      "produced_outputs": ["memberFound"]
+    },
+    {
+      "description": "Retrieve the member's savings account balance.",
+      "operation": "read",
+      "required_inputs": ["memberId"],
+      "produced_outputs": ["savingsBalance"]
+    },
+    {
+      "description": "Create a servicing note on the member's account.",
+      "operation": "write",
+      "required_inputs": ["memberId", "note"],
+      "produced_outputs": ["noteId"]
+    }
+  ]
 }"""
 
 ACTION_TOOL = {
@@ -92,6 +140,23 @@ ACTION_TOOL = {
             },
             "confidence": {"type": "number"},
             "missing_required_inputs": {"type": "array", "items": {"type": "string"}},
+            "sub_goals": {
+                "type": "array",
+                "description": (
+                    "Only for a compound goal describing multiple distinct actions in sequence. "
+                    "Leave empty/omitted for a single-action goal."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "operation": {"type": "string", "enum": ["read", "write"]},
+                        "required_inputs": {"type": "array", "items": {"type": "string"}},
+                        "produced_outputs": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["description", "operation"],
+                },
+            },
         },
         "required": ["intent", "domain", "operation", "risk", "confidence"],
     },

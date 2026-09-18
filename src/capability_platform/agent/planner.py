@@ -79,21 +79,51 @@ PLAN_TEMPLATES: dict[str, tuple[StepTemplate, ...]] = {
 
 class Planner:
     def plan(self, intent: TaskIntent) -> ExecutionPlan:
-        templates = PLAN_TEMPLATES.get(intent.intent) or self._fallback_templates(intent)
-        steps = [
-            PlanStep(
-                id=template.id,
-                description=template.description,
-                operation=template.operation,
-                required_inputs=list(template.required_inputs),
-                produced_outputs=list(template.produced_outputs),
-                depends_on=list(template.depends_on),
-                risk=template.risk,
-                intent_ref=intent.intent,
-            )
-            for template in templates
-        ]
+        if intent.sub_goals:
+            # A compound goal the Intent Analyzer's own LLM call already decomposed -- takes
+            # priority over PLAN_TEMPLATES, since it's a more specific, goal-tailored
+            # decomposition than any fixed template could be. The Planner stays LLM-free here:
+            # it just mechanically turns an already-ordered list into sequential PlanSteps.
+            steps = self._steps_from_sub_goals(intent)
+        else:
+            templates = PLAN_TEMPLATES.get(intent.intent) or self._fallback_templates(intent)
+            steps = [
+                PlanStep(
+                    id=template.id,
+                    description=template.description,
+                    operation=template.operation,
+                    required_inputs=list(template.required_inputs),
+                    produced_outputs=list(template.produced_outputs),
+                    depends_on=list(template.depends_on),
+                    risk=template.risk,
+                    intent_ref=intent.intent,
+                )
+                for template in templates
+            ]
         return ExecutionPlan(id=str(uuid4()), goal=intent.raw_goal, steps=steps)
+
+    @staticmethod
+    def _steps_from_sub_goals(intent: TaskIntent) -> list[PlanStep]:
+        """One PlanStep per SubGoal, in the order the Intent Analyzer declared them, chained
+        sequentially (step-N depends on step-(N-1)) -- the LLM call already established
+        execution order; the Planner just mechanically turns that into dependency edges. Risk is
+        still assigned code-side (read -> READ_ONLY, write -> REVERSIBLE), never taken from the
+        model, matching the same "risk is never model-decided" rule discovery.py already follows."""
+        steps: list[PlanStep] = []
+        for index, sub_goal in enumerate(intent.sub_goals, start=1):
+            steps.append(
+                PlanStep(
+                    id=f"step-{index}",
+                    description=sub_goal.description,
+                    operation=sub_goal.operation,
+                    required_inputs=list(sub_goal.required_inputs),
+                    produced_outputs=list(sub_goal.produced_outputs),
+                    depends_on=[f"step-{index - 1}"] if index > 1 else [],
+                    risk=RiskLevel.READ_ONLY if sub_goal.operation == "read" else RiskLevel.REVERSIBLE,
+                    intent_ref=intent.intent,
+                )
+            )
+        return steps
 
     @staticmethod
     def _fallback_templates(intent: TaskIntent) -> tuple[StepTemplate, ...]:
