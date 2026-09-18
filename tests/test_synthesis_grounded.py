@@ -2,7 +2,20 @@ import inspect
 
 from capability_platform.agent.models import CapabilityExecutionResult, RequiredOutput, TaskIntent
 from capability_platform.models import ErrorCategory, RiskLevel, RunError, RunStatus
-from capability_platform.synthesis.result import GroundedSynthesizer
+from capability_platform.synthesis.result import GroundedSynthesizer, _humanize
+
+
+def test_humanize_splits_camel_case_into_lowercase_words():
+    assert _humanize("savingsBalance") == "savings balance"
+    assert _humanize("noteId") == "note id"
+    assert _humanize("memberId") == "member id"
+
+
+def test_humanize_generalizes_to_a_name_never_seen_before():
+    """No per-output dictionary -- must work for a capability's output name that doesn't exist
+    anywhere in this codebase yet, without any change here."""
+    assert _humanize("outstandingLoanBalance") == "outstanding loan balance"
+    assert _humanize("accountHolderFullName") == "account holder full name"
 
 
 def _intent(**overrides) -> TaskIntent:
@@ -37,8 +50,13 @@ def test_synthesized_text_reflects_the_real_aggregated_value_verbatim():
     text = GroundedSynthesizer.synthesize_agent_result(
         intent=_intent(), outputs={"savingsBalance": 1220.0}, status=RunStatus.SUCCESS
     )
+    # The raw value is interpolated exactly as computed -- never reformatted -- which is what
+    # keeps this "grounded": a reviewer can grep the response for the literal number replay
+    # produced. Only the output's LABEL is humanized ("savingsBalance" -> "savings balance"),
+    # for a response that reads naturally instead of echoing an internal field name.
     assert "1220.0" in text
-    assert "retrieve_account_balance" in text
+    assert "savings balance" in text
+    assert text == "The savings balance is 1220.0."
 
 
 def test_synthesizer_cannot_be_made_to_fabricate_a_value_it_was_never_given():
@@ -146,7 +164,7 @@ def test_success_shows_a_computed_output_even_when_required_outputs_is_empty():
         intent=intent, outputs={"savingsBalance": 4250.25}, status=RunStatus.SUCCESS
     )
     assert "4250.25" in text
-    assert "savingsBalance" in text
+    assert "savings balance" in text
     assert text != "Completed 'retrieve_account_balance'. "
 
 
@@ -160,7 +178,7 @@ def test_success_shows_a_computed_output_even_when_required_outputs_names_it_dif
         intent=intent, outputs={"savingsBalance": 4250.25}, status=RunStatus.SUCCESS
     )
     assert "4250.25" in text
-    assert "savingsBalance" in text
+    assert "savings balance" in text
 
 
 def test_conversational_intent_with_no_reply_falls_back_to_a_generic_acknowledgment():
@@ -169,3 +187,19 @@ def test_conversational_intent_with_no_reply_falls_back_to_a_generic_acknowledgm
         intent=conversational, outputs={}, status=RunStatus.SUCCESS
     )
     assert text == "Got it -- let me know if there's anything else I can help with."
+
+
+def test_success_reads_naturally_with_multiple_outputs():
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(), outputs={"savingsBalance": 1220.0, "noteId": "N123"}, status=RunStatus.SUCCESS
+    )
+    assert text == "The savings balance is 1220.0, the note id is N123."
+
+
+def test_success_with_no_outputs_names_the_action_instead_of_reading_empty():
+    """A write-only step that produces nothing to report must never read like the old bug
+    ("Completed '...'. " with nothing after it) -- it should say plainly that nothing came back."""
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(), outputs={}, status=RunStatus.SUCCESS
+    )
+    assert text == "Done -- 'retrieve account balance' completed, with nothing further to report."

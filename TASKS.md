@@ -2048,3 +2048,58 @@ in the real repo throughout.
 uv run pytest -q -m "not e2e"   →  223 passed, 21 deselected   (up from 221 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 19 log — natural-language SUCCESS responses; a pre-existing test-pollution bug found and fixed along the way
+
+User asked for the SUCCESS response text to sound more real -- the previous phase's fix produced
+correct but robotic text: `Completed 'retrieve_account_balance'. savingsBalance: 4250.25`.
+
+New `synthesis/result.py::_humanize(name)`: purely mechanical camelCase word-splitting
+(`"savingsBalance"` -&gt; `"savings balance"`, `"noteId"` -&gt; `"note id"`) with **no per-output
+dictionary** -- generalizes to any future capability's output names with zero code changes,
+consistent with CLAUDE.md's "no source-specific branching" rule applied to response text instead
+of routing logic. `synthesize_agent_result`'s SUCCESS branch now reads:
+`"The {humanized label} is {raw value}, the {humanized label} is {raw value}."` -- critically, the
+**raw value itself is never reformatted**, only the label next to it -- so grounding is
+unaffected: a reviewer can still grep the response for the literal number/string replay actually
+produced. A no-outputs case (a write-only step with nothing to report) gets a plain
+`"Done -- '{action}' completed, with nothing further to report."` instead of ever repeating the
+old bug's empty-trailing-text shape.
+
+```
+Before: Completed 'retrieve_account_balance'. savingsBalance: 4250.25
+After:  The savings balance is 4250.25.
+```
+
+**A real, pre-existing bug found and fixed along the way, unrelated to this change**:
+`tests/test_orchestrator.py::test_unresolved_step_falls_back_to_real_discovery_agent` started
+failing (`FAILURE` instead of the expected `PAUSED`) -- root cause was a stray, gitignored local
+file, `artifacts/open-account-preferences.v1.json` (`lifecycle: "approved"`), left over from an
+earlier live-verification run this session. The orchestrator's own `DISCOVERY_ID_COLLISION` guard
+(working exactly as designed -- see Phase 14) correctly refused to let the test's stub discovery
+agent silently overwrite what looked like an already-approved real artifact. Removed the stray
+file (confirmed gitignored and untracked via `git check-ignore`/`git ls-files` before deleting --
+never a tracked or shipped artifact) and the test passed again. Flags a real, pre-existing gap in
+`tests/test_orchestrator.py::_build_orchestrator`: it points `ArtifactStore` at the real
+`Path("artifacts")` directory instead of an isolated `tmp_path`, so any local live-run that saves
+a colliding-id artifact can contaminate this test file -- not fixed in this pass (out of scope
+for what was asked), named here so it doesn't get rediscovered as a mystery later.
+
+New tests: `_humanize()` directly (including a name that appears nowhere else in this codebase,
+proving there's no hidden per-output dictionary), multi-output phrasing, the no-outputs fallback
+text, and the existing grounding/adversarial tests updated to check the new phrasing (raw value
+still verbatim, label humanized).
+
+**Live-verified** with the user's own reported goal and a normal-phrasing goal, same isolated
+servers/data pattern as every other phase:
+```
+"account id 10001 balance"                          -> "The savings balance is 4250.25."
+"Find member 10002 and return savings balance"       -> "The savings balance is 1220.0."
+```
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  227 passed, 21 deselected   (up from 223 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
