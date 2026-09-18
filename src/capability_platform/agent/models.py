@@ -63,6 +63,20 @@ class TaskIntent(BaseModel):
         "sequence. Empty for a single-action goal -- the Planner's existing template/generic-step "
         "logic handles that case unchanged.",
     )
+    requires_clarification: bool = Field(
+        default=False,
+        description="True when the goal is too ambiguous to classify at all (no discernible "
+        "entity, operation, or value -- e.g. 'handle this member'). When true, the orchestrator "
+        "must ask the caller for clarification instead of guessing at intent/entities; every "
+        "other field on this TaskIntent should be treated as a low-confidence placeholder, not "
+        "acted on.",
+    )
+    clarification_question: str | None = Field(
+        default=None,
+        description="Set only when requires_clarification is true -- a short, specific question "
+        "the caller needs to answer before this goal can be classified (e.g. 'Which member, and "
+        "what would you like to do for them?').",
+    )
     raw_goal: str
     provider: str = Field(description="Provenance tag of the LLM provider that produced this, e.g. 'mock:v1'.")
 

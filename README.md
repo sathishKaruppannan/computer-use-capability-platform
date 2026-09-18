@@ -95,7 +95,10 @@ discovery. It's routed through, in order —
 
 1. **Intent Analyzer** (`agent/intent_analyzer.py`) — an LLM call (pluggable provider,
    `llm/{anthropic,openai,mock}_provider.py`) that extracts a structured `TaskIntent`: intent id,
-   entities, required outputs, read/write operation, risk, confidence. Never executes anything.
+   entities, required outputs, read/write operation, risk, confidence. Never executes anything. A
+   genuinely ambiguous goal ("handle this member") sets `requires_clarification` instead of
+   guessing — the orchestrator raises before planning ever starts (`ClarificationRequiredError`,
+   surfaced as a clean 400/CLI error with the model's own follow-up question).
 2. **Planner** (`agent/planner.py`) — deterministic, no LLM call. Converts the intent into one or
    more `PlanStep`s with declared inputs/outputs/dependencies. A compound goal ("find member, get
    the balance, and create a note") is decomposed via `TaskIntent.sub_goals` — populated by the

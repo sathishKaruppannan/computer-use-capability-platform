@@ -13,6 +13,7 @@ convention as api/v1_routes.py::execute_v1) is invocable by any authenticated ca
 from fastapi import APIRouter, Depends, HTTPException
 
 from capability_platform.access.models import ClientCredential
+from capability_platform.agent.intent_analyzer import ClarificationRequiredError
 from capability_platform.agent.models import CapabilityResolution
 from capability_platform.agent.plan_validator import PlanValidationError
 from capability_platform.api.auth import authenticate_client
@@ -47,6 +48,8 @@ async def execute_agent(
     orchestrator = agent_orchestrator(resolution_authorizer=_require_service_type_authorizer(credential))
     try:
         result = await orchestrator.execute_goal(request.goal, request.context)
+    except ClarificationRequiredError as exc:
+        raise HTTPException(400, f"Clarification required: {exc.question}") from exc
     except PlanValidationError as exc:
         raise HTTPException(400, f"Plan validation failed: {exc}") from exc
     return AgentExecuteResponse(
@@ -72,6 +75,8 @@ async def plan_agent(
     del credential
     try:
         intent, plan, resolutions = await agent_orchestrator().plan_only(request.goal, request.context)
+    except ClarificationRequiredError as exc:
+        raise HTTPException(400, f"Clarification required: {exc.question}") from exc
     except PlanValidationError as exc:
         raise HTTPException(400, f"Plan validation failed: {exc}") from exc
     return AgentPlanResponse(run_id=plan.id, intent=intent, plan=plan, resolutions=resolutions)

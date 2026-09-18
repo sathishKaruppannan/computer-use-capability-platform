@@ -130,3 +130,28 @@ async def test_sub_goals_default_to_empty_for_a_single_action_goal():
     analyzer = IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE))
     intent = await analyzer.analyze("Get the savings balance for member 10002")
     assert intent.sub_goals == []
+
+
+AMBIGUOUS_GOAL_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "requires_clarification": True,
+    "clarification_question": "Which member, and what would you like to do for them?",
+}
+
+
+async def test_requires_clarification_round_trips_from_provider_response():
+    analyzer = IntentAnalyzer(MockLLMProvider(AMBIGUOUS_GOAL_RESPONSE))
+    intent = await analyzer.analyze("Handle this member.")
+    assert intent.requires_clarification is True
+    assert intent.clarification_question == "Which member, and what would you like to do for them?"
+
+
+async def test_requires_clarification_defaults_to_false():
+    analyzer = IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE))
+    intent = await analyzer.analyze("Get the savings balance for member 10002")
+    assert intent.requires_clarification is False
+    assert intent.clarification_question is None

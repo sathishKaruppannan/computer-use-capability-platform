@@ -31,6 +31,18 @@ risk: 'read_only' for pure lookups, 'reversible' for straightforward edits, 'ris
 confidence: how sure you are of this whole classification, 0 to 1.
 missing_required_inputs: names of anything the goal clearly needs but doesn't state.
 
+requires_clarification / clarification_question -- ONLY when the goal is genuinely too ambiguous
+to classify at all: no discernible entity, no discernible operation, no discernible business
+action (e.g. "Phone number.", "Need to change it.", "Handle this member."). Set
+requires_clarification=true and clarification_question to a short, specific question the caller
+needs to answer (e.g. "Which member, and what would you like to do for them?"). You still have to
+fill every other required field with a placeholder in this case -- use intent='unknown',
+domain='unknown', operation='read', risk='read_only', confidence=0.1 -- none of them are acted
+on when requires_clarification is true. Do NOT set this for a goal that's merely missing one
+piece of information you can name (that's what missing_required_inputs is for) or one that's
+vague but still has a discernible verb and subject (e.g. "check on the member" still means
+intent=retrieve_account_status or similar -- classify it, don't ask for clarification).
+
 sub_goals -- ONLY when the goal describes multiple genuinely distinct actions in sequence (e.g.
 "find member X, do A, then do B"), not for a single action described in several clauses. When
 present, list each action in execution order, each with:
@@ -92,6 +104,18 @@ Goal: "Find member 10001, retrieve the savings balance, and create a servicing n
       "produced_outputs": ["noteId"]
     }
   ]
+}
+
+Worked example 3 -- a genuinely ambiguous goal, follow this shape for an equivalent goal:
+Goal: "Handle this member."
+{
+  "intent": "unknown",
+  "domain": "unknown",
+  "operation": "read",
+  "risk": "read_only",
+  "confidence": 0.1,
+  "requires_clarification": true,
+  "clarification_question": "Which member, and what would you like to do for them?"
 }"""
 
 ACTION_TOOL = {
@@ -156,6 +180,18 @@ ACTION_TOOL = {
                     },
                     "required": ["description", "operation"],
                 },
+            },
+            "requires_clarification": {
+                "type": "boolean",
+                "description": (
+                    "True ONLY when the goal is too ambiguous to classify at all -- no "
+                    "discernible entity, operation, or business action."
+                ),
+            },
+            "clarification_question": {
+                "type": "string",
+                "description": "Required when requires_clarification is true: a short, specific "
+                "question the caller needs to answer before this goal can be classified.",
             },
         },
         "required": ["intent", "domain", "operation", "risk", "confidence"],

@@ -20,6 +20,17 @@ class IntentAnalysisError(RuntimeError):
     treats this as the final safety net and routes straight to COMPUTER_USE_DISCOVERY."""
 
 
+class ClarificationRequiredError(RuntimeError):
+    """Raised by the orchestrator (not IntentAnalyzer itself -- analyze() always returns a valid
+    TaskIntent, ambiguous or not) when TaskIntent.requires_clarification is true. Carries the
+    model's own clarification_question so a caller (CLI/REST) can surface it directly instead of
+    the pipeline guessing at intent/entities from an unclassifiable goal."""
+
+    def __init__(self, question: str | None) -> None:
+        self.question = question or "Please provide more detail about what you'd like to do."
+        super().__init__(self.question)
+
+
 class IntentAnalyzer:
     def __init__(self, provider: LLMProvider, fallback_provider: LLMProvider | None = None) -> None:
         self.provider = provider
