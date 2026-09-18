@@ -53,3 +53,20 @@ def test_credential_input_specs_for_api_key_auth():
     assert len(specs) == 1
     assert specs[0].name == "apiKey"
     assert specs[0].sensitive is True
+
+
+def test_slugify_converts_snake_case_intent_to_dash_separated_id():
+    assert ClaudeDiscoveryAgent._slugify("retrieve_account_balance") == "retrieve-account-balance"
+
+
+def test_slugify_strips_non_alphanumeric_and_lowercases():
+    assert ClaudeDiscoveryAgent._slugify("Confirm Member's Status!") == "confirm-member-s-status"
+
+
+def test_derive_tags_falls_back_to_savings_balance_defaults_when_no_hint():
+    assert ClaudeDiscoveryAgent._derive_tags(None) == ["member", "savings", "balance", "computer-use"]
+
+
+def test_derive_tags_from_capability_hint():
+    tags = ClaudeDiscoveryAgent._derive_tags("confirm_account_status")
+    assert tags == ["confirm", "account", "status", "computer-use"]

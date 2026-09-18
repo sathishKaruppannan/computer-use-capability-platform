@@ -38,7 +38,13 @@ For strategy='role' specifically, 'value' and 'name' are NOT interchangeable: 'v
 the ARIA role TYPE (e.g. 'button', 'link', 'textbox', 'heading'), and 'name' is the element's
 visible accessible name/label. Example: to click a button labeled "Search", send
 strategy='role', value='button', name='Search' — never the reverse. For
-'label'/'text'/'css'/'xpath', put the locator in 'value' and leave 'name' empty."""
+'label'/'text'/'css'/'xpath', put the locator in 'value' and leave 'name' empty.
+
+When you send action='complete', you MUST also include 'strategy' plus 'value' and/or 'name' --
+exactly like you would for click/extract -- identifying an element currently visible on the page
+that proves the goal is actually done. This is re-verified against the live page before
+completion is accepted, so make it something the audience would actually recognize as "done,"
+not something that was already visible before you got there."""
 
 
 VARIANT = PromptVariant(id="demo", version=1, system_prompt=SYSTEM_PROMPT, action_tool=ACTION_TOOL)
