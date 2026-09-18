@@ -63,6 +63,19 @@ class TaskIntent(BaseModel):
         "sequence. Empty for a single-action goal -- the Planner's existing template/generic-step "
         "logic handles that case unchanged.",
     )
+    is_conversational: bool = Field(
+        default=False,
+        description="True when the input isn't a task request at all -- a greeting, thanks, "
+        "acknowledgment, or small talk with no business action in it, even vague. When true, "
+        "the orchestrator skips planning/resolution entirely and the response is "
+        "conversational_reply, verbatim; every other field is a low-confidence placeholder, "
+        "not acted on.",
+    )
+    conversational_reply: str | None = Field(
+        default=None,
+        description="Set only when is_conversational is true -- a short, warm natural-language "
+        "reply with no task content, echoed back as the response verbatim.",
+    )
     requires_clarification: bool = Field(
         default=False,
         description="True when the goal is too ambiguous to classify at all (no discernible "

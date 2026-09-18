@@ -118,3 +118,24 @@ def test_failure_without_a_captured_error_falls_back_to_the_generic_message():
         intent=_intent(), outputs={}, status=RunStatus.FAILURE, execution=[]
     )
     assert "see execution details" in text
+
+
+def test_conversational_intent_returns_the_reply_verbatim_regardless_of_status():
+    conversational = _intent(
+        is_conversational=True,
+        conversational_reply="You're welcome! Let me know if there's anything else I can help with.",
+    )
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=conversational, outputs={}, status=RunStatus.SUCCESS
+    )
+    assert text == "You're welcome! Let me know if there's anything else I can help with."
+    assert "Completed" not in text
+    assert "unknown" not in text
+
+
+def test_conversational_intent_with_no_reply_falls_back_to_a_generic_acknowledgment():
+    conversational = _intent(is_conversational=True, conversational_reply=None)
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=conversational, outputs={}, status=RunStatus.SUCCESS
+    )
+    assert text == "Got it -- let me know if there's anything else I can help with."

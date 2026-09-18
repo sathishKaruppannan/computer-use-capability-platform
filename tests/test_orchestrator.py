@@ -403,6 +403,53 @@ async def test_plan_only_refuses_a_sensitive_info_request(tmp_path):
         await orchestrator.plan_only("What is member 10002's full Social Security Number?")
 
 
+CONVERSATIONAL_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "is_conversational": True,
+    "conversational_reply": "You're welcome! Let me know if there's anything else I can help with.",
+}
+
+
+async def test_execute_goal_returns_conversational_reply_without_planning_or_resolving(tmp_path):
+    """Regression test for a real bug found live: a pure acknowledgment ('thank you') was being
+    misclassified through the ambiguous-goal guardrail and surfaced as a 'Clarification required'
+    error bubble. It must instead resolve to a plain, successful conversational reply with zero
+    steps planned, zero capabilities resolved, and zero discovery attempted."""
+
+    def _discovery_agent_factory():
+        raise AssertionError("a conversational message must never reach discovery")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, _discovery_agent_factory, intent_response=CONVERSATIONAL_RESPONSE
+    )
+    result = await orchestrator.execute_goal("Thank you, that's all I needed.")
+
+    assert result.status == RunStatus.SUCCESS
+    assert result.plan.steps == []
+    assert result.resolutions == []
+    assert result.execution == []
+    assert result.outputs == {}
+    assert result.synthesized_text == "You're welcome! Let me know if there's anything else I can help with."
+
+
+async def test_plan_only_returns_empty_plan_for_a_conversational_message(tmp_path):
+    def _discovery_agent_factory():
+        raise AssertionError("a conversational message must never reach discovery")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, _discovery_agent_factory, intent_response=CONVERSATIONAL_RESPONSE
+    )
+    intent, plan, resolutions = await orchestrator.plan_only("No, I am good.")
+
+    assert intent.is_conversational is True
+    assert plan.steps == []
+    assert resolutions == []
+
+
 async def test_plan_only_does_not_execute_anything(tmp_path):
     def _discovery_agent_factory():
         raise AssertionError("plan_only must never invoke discovery")

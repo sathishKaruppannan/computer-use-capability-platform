@@ -229,6 +229,23 @@ class AgentOrchestrator:
             evidence.event("guardrail.sensitive_info_refused", reason=intent.sensitive_info_reason)
             raise SensitiveInfoRequestedError(intent.sensitive_info_reason)
 
+        if intent.is_conversational:
+            # Not ambiguous and not a task -- a greeting, a thank-you, an acknowledgment of a
+            # prior turn this stateless call has no memory of. Distinct from
+            # requires_clarification: there's nothing to clarify, so this builds a real, empty
+            # plan (zero steps) and lets the normal resolve/execute loop run over it unchanged --
+            # it naturally does nothing (empty resolutions, empty execution) and lands on a plain
+            # SUCCESS with no outputs, which GroundedSynthesizer turns into conversational_reply
+            # verbatim instead of guessing at "Completed 'unknown'." for an intent with no real
+            # content. PlanValidator is skipped, not called with an empty plan -- it hard-rejects
+            # "no steps" as a malformed real plan, which is the right call for an actual task and
+            # the wrong one here, where zero steps is the correct, expected shape.
+            evidence.event("intent.conversational", reply=intent.conversational_reply)
+            plan = ExecutionPlan(id=str(uuid4()), goal=goal, steps=[])
+            evidence.event("plan.created", plan_id=plan.id, step_count=0, steps=[])
+            evidence.event("plan.validated", steps_requiring_approval=[])
+            return intent, plan, []
+
         plan = self.planner.plan(intent)
         evidence.event(
             "plan.created", plan_id=plan.id, step_count=len(plan.steps), steps=[step.id for step in plan.steps]

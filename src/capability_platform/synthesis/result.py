@@ -38,6 +38,13 @@ class GroundedSynthesizer:
         step-level detail it carries (a freshly discovered artifact's id, a specific error
         message) is canonical fact already computed elsewhere, not derived here."""
         execution = execution or []
+        if intent.is_conversational:
+            # A greeting/thanks/acknowledgment, not a task -- the orchestrator built a real but
+            # empty plan for this (see _intent_plan_resolve), so status is always a bare SUCCESS
+            # with no outputs here; echoing "Completed 'unknown'." would be nonsense. Read from
+            # `intent`, not a new parameter -- same class of read as intent.intent/
+            # intent.required_outputs below, so this doesn't reopen the no-LLM-parameter guarantee.
+            return intent.conversational_reply or "Got it -- let me know if there's anything else I can help with."
         if status == RunStatus.SUCCESS:
             facts = ", ".join(
                 f"{name}: {outputs[name]}"

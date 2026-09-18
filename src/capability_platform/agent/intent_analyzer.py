@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from capability_platform.agent.models import TaskIntent
-from capability_platform.agent.prompts.intent_v1 import VARIANT
+from capability_platform.agent.prompts.intent_v2 import VARIANT
 from capability_platform.llm.provider import LLMProvider
 from capability_platform.observability.evidence import EvidenceCollector
 from capability_platform.validation import validate_goal_length
