@@ -721,3 +721,8 @@ filesystem or CLI access just to find out a draft exists.
   with a clear `APPROVAL_DENIED` error rather than proceeding. See "Human handoff demo" above
   and `tests/test_approval.py`.
 - Do not commit `.env` or browser session state.
+- A `goal` is capped at `Settings.max_goal_length` (200 characters) — this is a local demo
+  target, not a production system, and every goal drives at least one real LLM call. Enforced
+  uniformly (`capability_platform/validation.py`) at the REST layer (`422`), the CLI (clean error,
+  exit 1), and as a backstop inside `IntentAnalyzer.analyze()`/`ClaudeDiscoveryAgent.discover()`
+  themselves — before any LLM call or browser session starts.

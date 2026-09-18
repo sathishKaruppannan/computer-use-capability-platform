@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from capability_platform.api.admin import ADMIN_HTML
 from capability_platform.api.agent_routes import router as agent_router
@@ -21,7 +21,7 @@ app.include_router(agent_router)
 
 
 class DiscoveryRequest(BaseModel):
-    goal: str
+    goal: str = Field(max_length=settings.max_goal_length)
     target_url: str | None = None
     example_member_id: str = "10001"
 

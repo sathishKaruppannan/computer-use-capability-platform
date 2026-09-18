@@ -280,3 +280,31 @@ def test_execute_agent_returns_400_with_clarification_question_for_ambiguous_goa
     )
     assert response.status_code == 400
     assert "Which member, and what would you like to do for them?" in response.json()["detail"]
+
+
+def test_execute_agent_rejects_goal_over_length_limit(monkeypatch, tmp_path):
+    """Rejected by Pydantic (AgentExecuteRequest.goal's max_length) before the orchestrator is
+    ever constructed -- no fake orchestrator needed, and no risk of a real LLM call."""
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/execute",
+        json={"goal": "x" * (global_settings.max_goal_length + 1), "client_inquiry_id": "req-1"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 422
+
+
+def test_plan_agent_rejects_goal_over_length_limit(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/plan",
+        json={"goal": "x" * (global_settings.max_goal_length + 1)},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 422

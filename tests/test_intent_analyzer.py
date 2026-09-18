@@ -3,6 +3,8 @@ import pytest
 from capability_platform.agent.intent_analyzer import IntentAnalysisError, IntentAnalyzer
 from capability_platform.llm.mock_provider import MockLLMProvider
 from capability_platform.models import RiskLevel
+from capability_platform.settings import settings
+from capability_platform.validation import GoalTooLongError
 
 SAVINGS_BALANCE_RESPONSE = {
     "intent": "retrieve_account_balance",
@@ -155,3 +157,10 @@ async def test_requires_clarification_defaults_to_false():
     intent = await analyzer.analyze("Get the savings balance for member 10002")
     assert intent.requires_clarification is False
     assert intent.clarification_question is None
+
+
+async def test_analyze_rejects_a_goal_over_the_length_limit():
+    analyzer = IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE))
+    too_long_goal = "x" * (settings.max_goal_length + 1)
+    with pytest.raises(GoalTooLongError):
+        await analyzer.analyze(too_long_goal)

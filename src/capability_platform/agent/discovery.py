@@ -28,6 +28,7 @@ from capability_platform.models import (
 )
 from capability_platform.observability.evidence import EvidenceCollector
 from capability_platform.policy.engine import PolicyEngine
+from capability_platform.validation import validate_goal_length
 
 
 class ClaudeDiscoveryAgent:
@@ -133,6 +134,7 @@ class ClaudeDiscoveryAgent:
         original hardcoded savings-balance scenario. All optional and additive: omitting them
         (as the plain `discover` CLI command and /v1/discover both still do) preserves the exact
         prior hardcoded defaults, byte-for-byte, so no existing evidence or test changes meaning."""
+        validate_goal_length(goal)
         run_id = run_id or str(uuid4())
         evidence = EvidenceCollector(self.evidence_root, run_id)
         surface = PlaywrightSurface(self.headless)

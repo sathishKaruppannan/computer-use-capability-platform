@@ -13,6 +13,7 @@ from capability_platform.agent.models import TaskIntent
 from capability_platform.agent.prompts.intent_v1 import VARIANT
 from capability_platform.llm.provider import LLMProvider
 from capability_platform.observability.evidence import EvidenceCollector
+from capability_platform.validation import validate_goal_length
 
 
 class IntentAnalysisError(RuntimeError):
@@ -42,6 +43,7 @@ class IntentAnalyzer:
         context: dict[str, Any] | None = None,
         evidence: EvidenceCollector | None = None,
     ) -> TaskIntent:
+        validate_goal_length(goal)
         user_prompt = json.dumps({"goal": goal, "context": context or {}})
         raw, provider_name = await self._complete(user_prompt)
         try:

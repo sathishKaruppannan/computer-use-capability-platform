@@ -153,6 +153,26 @@ def test_discover_v1_requires_authentication(monkeypatch, tmp_path):
     assert response.status_code == 401
 
 
+def test_discover_v1_rejects_goal_over_length_limit(monkeypatch, tmp_path):
+    """Rejected by Pydantic (DiscoverV1Request.goal's max_length) before authentication or
+    discovery are ever reached -- no risk of a real LLM call."""
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/v1/discover",
+        json={
+            "service_type": "member_savings_balance_lookup",
+            "system_identifier": "legacy-member-servicing-demo",
+            "client_inquiry_id": "client-req-toolong",
+            "goal": "x" * (global_settings.max_goal_length + 1),
+        },
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 422
+
+
 def test_discover_v1_rejects_bad_password(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])

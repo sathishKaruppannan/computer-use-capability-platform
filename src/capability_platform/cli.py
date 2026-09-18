@@ -17,6 +17,7 @@ from capability_platform.runtime import (
 )
 from capability_platform.settings import settings
 from capability_platform.synthesis.result import GroundedSynthesizer
+from capability_platform.validation import GoalTooLongError
 
 
 def parse_inputs(values: list[str]) -> dict[str, str]:
@@ -25,7 +26,11 @@ def parse_inputs(values: list[str]) -> dict[str, str]:
 
 async def run(args) -> None:
     if args.command == "discover":
-        artifact = await discovery_agent().discover(args.goal, args.target, args.member_id)
+        try:
+            artifact = await discovery_agent().discover(args.goal, args.target, args.member_id)
+        except GoalTooLongError as exc:
+            print(json.dumps({"error": "goal_too_long", "message": str(exc)}, indent=2))
+            sys.exit(1)
         path = store().save(artifact)
         print(json.dumps({"artifact": artifact.qualified_id, "path": str(path)}, indent=2))
     elif args.command == "replay":
@@ -51,6 +56,9 @@ async def run(args) -> None:
             intent, plan, resolutions = await agent_orchestrator().plan_only(
                 args.goal, parse_inputs(args.context)
             )
+        except GoalTooLongError as exc:
+            print(json.dumps({"error": "goal_too_long", "message": str(exc)}, indent=2))
+            sys.exit(1)
         except ClarificationRequiredError as exc:
             print(json.dumps({"error": "clarification_required", "question": exc.question}, indent=2))
             sys.exit(1)
@@ -70,6 +78,9 @@ async def run(args) -> None:
     elif args.command == "run":
         try:
             result = await agent_orchestrator().execute_goal(args.goal, parse_inputs(args.context))
+        except GoalTooLongError as exc:
+            print(json.dumps({"error": "goal_too_long", "message": str(exc)}, indent=2))
+            sys.exit(1)
         except ClarificationRequiredError as exc:
             print(json.dumps({"error": "clarification_required", "question": exc.question}, indent=2))
             sys.exit(1)

@@ -14,6 +14,8 @@ from capability_platform.capabilities.store import ArtifactStore
 from capability_platform.llm.mock_provider import MockLLMProvider
 from capability_platform.models import CapabilityArtifact, ExecutionResult, RunStatus
 from capability_platform.policy.engine import PolicyEngine, default_policy
+from capability_platform.settings import settings
+from capability_platform.validation import GoalTooLongError
 
 SAVINGS_BALANCE_RESPONSE = {
     "intent": "retrieve_account_balance",
@@ -300,6 +302,19 @@ AMBIGUOUS_GOAL_RESPONSE = {
     "requires_clarification": True,
     "clarification_question": "Which member, and what would you like to do for them?",
 }
+
+
+async def test_execute_goal_rejects_a_goal_over_the_length_limit_before_reaching_discovery(tmp_path):
+    """The length check runs inside IntentAnalyzer.analyze() -- the very first thing the
+    pipeline does -- so an over-length goal never reaches the resolver or discovery at all."""
+
+    def _discovery_agent_factory():
+        raise AssertionError("must never reach discovery for a goal that's too long")
+
+    orchestrator = _build_orchestrator(tmp_path, _discovery_agent_factory)
+    too_long_goal = "x" * (settings.max_goal_length + 1)
+    with pytest.raises(GoalTooLongError):
+        await orchestrator.execute_goal(too_long_goal)
 
 
 async def test_plan_only_raises_clarification_required_for_ambiguous_goal(tmp_path):
