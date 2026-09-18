@@ -239,3 +239,44 @@ def test_execute_agent_returns_400_on_unsatisfiable_plan(monkeypatch, tmp_path):
         auth=("demo-client", "correct-pw"),
     )
     assert response.status_code == 400
+
+
+AMBIGUOUS_GOAL_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "requires_clarification": True,
+    "clarification_question": "Which member, and what would you like to do for them?",
+}
+
+
+def test_plan_agent_returns_400_with_clarification_question_for_ambiguous_goal(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _install_fake_orchestrator(monkeypatch, intent_response=AMBIGUOUS_GOAL_RESPONSE)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/plan",
+        json={"goal": "Handle this member."},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+    assert "Which member, and what would you like to do for them?" in response.json()["detail"]
+
+
+def test_execute_agent_returns_400_with_clarification_question_for_ambiguous_goal(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _install_fake_orchestrator(monkeypatch, intent_response=AMBIGUOUS_GOAL_RESPONSE)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/execute",
+        json={"goal": "Handle this member.", "client_inquiry_id": "req-1"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+    assert "Which member, and what would you like to do for them?" in response.json()["detail"]

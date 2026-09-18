@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from capability_platform.agent.intent_analyzer import IntentAnalyzer
+import pytest
+
+from capability_platform.agent.intent_analyzer import ClarificationRequiredError, IntentAnalyzer
 from capability_platform.agent.orchestrator import AgentOrchestrator
 from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
@@ -287,6 +289,40 @@ async def test_resolution_authorizer_allows_execution_when_it_raises_nothing(tmp
 
     assert result.status == RunStatus.SUCCESS
     assert result.outputs == {"savingsBalance": 1220.0}
+
+
+AMBIGUOUS_GOAL_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "requires_clarification": True,
+    "clarification_question": "Which member, and what would you like to do for them?",
+}
+
+
+async def test_plan_only_raises_clarification_required_for_ambiguous_goal(tmp_path):
+    def _discovery_agent_factory():
+        raise AssertionError("must never reach discovery for a goal needing clarification")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, _discovery_agent_factory, intent_response=AMBIGUOUS_GOAL_RESPONSE
+    )
+    with pytest.raises(ClarificationRequiredError) as exc_info:
+        await orchestrator.plan_only("Handle this member.")
+    assert exc_info.value.question == "Which member, and what would you like to do for them?"
+
+
+async def test_execute_goal_raises_clarification_required_and_never_executes(tmp_path):
+    def _discovery_agent_factory():
+        raise AssertionError("must never reach discovery for a goal needing clarification")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, _discovery_agent_factory, intent_response=AMBIGUOUS_GOAL_RESPONSE
+    )
+    with pytest.raises(ClarificationRequiredError):
+        await orchestrator.execute_goal("Handle this member.")
 
 
 async def test_plan_only_does_not_execute_anything(tmp_path):

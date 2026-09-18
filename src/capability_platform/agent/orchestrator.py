@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from capability_platform.agent.intent_analyzer import IntentAnalysisError, IntentAnalyzer
+from capability_platform.agent.intent_analyzer import (
+    ClarificationRequiredError,
+    IntentAnalysisError,
+    IntentAnalyzer,
+)
 from capability_platform.agent.models import (
     AgentResult,
     CapabilityExecutionResult,
@@ -203,6 +207,15 @@ class AgentOrchestrator:
             evidence.event("plan.created", plan_id=plan.id, step_count=1, steps=["step-1"])
             evidence.event("plan.validated", steps_requiring_approval=[])
             return intent, plan, [resolution]
+
+        if intent.requires_clarification:
+            # The model itself flagged this goal as unclassifiable -- never guess at a plan for
+            # it. Raised, not silently routed to discovery, since discovery would need a real
+            # goal to attempt, and every field on this TaskIntent besides the clarification
+            # question is an unusable placeholder (see the intent-analysis prompt's own
+            # instruction on what to fill in when this flag is set).
+            evidence.event("intent.clarification_required", question=intent.clarification_question)
+            raise ClarificationRequiredError(intent.clarification_question)
 
         plan = self.planner.plan(intent)
         evidence.event(

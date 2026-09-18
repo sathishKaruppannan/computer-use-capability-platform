@@ -1556,3 +1556,54 @@ check, `force_rediscover`, and every other existing `/v1/discover`/`/v1/capabili
 are byte-for-byte unchanged, confirmed by all pre-existing tests still passing unmodified (except
 the 7 given the one-line `_no_semantic_match()`/`evidence_dir` mocking fix required to keep them
 hermetic — their assertions themselves did not change).
+
+## Phase 12 log — ambiguous-goal clarification handling
+
+A genuinely ambiguous goal ("handle this member," "need to change it") previously had no explicit
+handling: it would produce a low-confidence `TaskIntent` with guessed/empty fields and proceed
+through planning and resolution anyway, wasting an LLM call and possibly a browser action on a
+goal the system never actually understood. Discussed the full tense/temporal-classification ask
+from the earlier, larger specification first (§5 of the mega-prompt) and confirmed it isn't PDF
+scope, then scoped this down to just the one genuinely useful piece: explicit clarification for
+truly unclassifiable goals, without building the surrounding tense/temporal machinery.
+
+`TaskIntent` gained `requires_clarification: bool` + `clarification_question: str | None`
+(additive, both default falsy). The intent-analysis prompt (`agent/prompts/intent_v1.py`) teaches
+the model to set these ONLY when a goal has no discernible entity, operation, or business action
+— explicitly instructed *not* to set it for a goal that's merely missing one nameable piece of
+information (that's what `missing_required_inputs` is for) or one that's vague but still has a
+discernible verb and subject, with a worked example for both the ambiguous and the still-fine
+cases. `AgentOrchestrator._intent_plan_resolve` checks the flag right after intent analysis
+succeeds and, if set, raises a new `ClarificationRequiredError` (co-located with
+`IntentAnalysisError` in `agent/intent_analyzer.py`) before planning or resolution ever run —
+caught at the CLI (`plan`/`run`, clean JSON + exit 1) and REST (`/agent/plan`/`/agent/execute`,
+HTTP 400 with the question in `detail`) boundaries, the same pattern already established for
+`PlanValidationError`.
+
+New tests: `test_intent_analyzer.py` (round-trip from a mock response, defaults to false for a
+normal goal), `test_orchestrator.py` (both `plan_only` and `execute_goal` raise before reaching
+discovery — a discovery-agent stub that raises `AssertionError` if called proves this), and
+`test_agent_api.py` (both REST endpoints return 400 with the clarification question).
+
+**Live-verified with two real Claude calls, not just the mock provider:**
+```
+uv run capability-platform plan --goal "Handle this member."
+→ exit 1, {"error": "clarification_required", "question": "Which member would you like to
+   handle, and what specific action would you like to take?"}
+```
+Evidence run `20431c14-8cb0-4f1a-a91d-3ac3929d3ad9`: `intent.analyzed` (real
+`requires_clarification: true`, `confidence: 0.1`, every other field exactly the placeholder the
+prompt instructs) → `intent.clarification_required`. And the negative case, proving no
+over-triggering on a normal goal:
+```
+uv run capability-platform plan --goal "Get the savings balance for member 10002"
+→ exit 0, intent.requires_clarification == false, intent.intent == "retrieve_account_balance"
+```
+`git status artifacts/` confirmed clean throughout (both are `plan`-only calls).
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  163 passed, 21 deselected   (up from 157 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
