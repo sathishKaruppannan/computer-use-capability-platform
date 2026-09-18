@@ -80,3 +80,53 @@ async def test_raises_when_provider_response_fails_validation():
     analyzer = IntentAnalyzer(MockLLMProvider({"intent": "x"}))  # missing required fields
     with pytest.raises(IntentAnalysisError):
         await analyzer.analyze("do something")
+
+
+COMPOUND_GOAL_RESPONSE = {
+    "intent": "retrieve_balance_and_create_note",
+    "domain": "member_servicing",
+    "operation": "write",
+    "entities": [{"name": "memberId", "value": "10001", "type": "string"}],
+    "required_outputs": [
+        {"name": "savingsBalance", "type": "number"},
+        {"name": "noteId", "type": "string"},
+    ],
+    "risk": "reversible",
+    "confidence": 0.85,
+    "sub_goals": [
+        {
+            "description": "Look up member 10001.",
+            "operation": "read",
+            "required_inputs": ["memberId"],
+            "produced_outputs": ["memberFound"],
+        },
+        {
+            "description": "Retrieve the member's savings account balance.",
+            "operation": "read",
+            "required_inputs": ["memberId"],
+            "produced_outputs": ["savingsBalance"],
+        },
+        {
+            "description": "Create a servicing note on the member's account.",
+            "operation": "write",
+            "required_inputs": ["memberId", "note"],
+            "produced_outputs": ["noteId"],
+        },
+    ],
+}
+
+
+async def test_sub_goals_round_trip_from_provider_response():
+    analyzer = IntentAnalyzer(MockLLMProvider(COMPOUND_GOAL_RESPONSE))
+    intent = await analyzer.analyze(
+        "Find member 10001, retrieve the savings balance, and create a servicing note"
+    )
+    assert len(intent.sub_goals) == 3
+    assert [sg.operation for sg in intent.sub_goals] == ["read", "read", "write"]
+    assert intent.sub_goals[2].required_inputs == ["memberId", "note"]
+
+
+async def test_sub_goals_default_to_empty_for_a_single_action_goal():
+    analyzer = IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE))
+    intent = await analyzer.analyze("Get the savings balance for member 10002")
+    assert intent.sub_goals == []

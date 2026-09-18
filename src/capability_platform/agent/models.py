@@ -33,6 +33,19 @@ class RequiredOutput(BaseModel):
     description: str = ""
 
 
+class SubGoal(BaseModel):
+    """One ordered piece of a compound goal ('find member, get balance, create a note'), as
+    identified by the Intent Analyzer's own LLM call. The Planner turns each of these directly
+    into a PlanStep with sequential dependencies -- it never decomposes a compound goal itself
+    (the Planner stays deterministic, no LLM call of its own); this is how that intelligence
+    reaches it without adding a second LLM call anywhere in the pipeline."""
+
+    description: str
+    operation: Literal["read", "write"]
+    required_inputs: list[str] = Field(default_factory=list)
+    produced_outputs: list[str] = Field(default_factory=list)
+
+
 class TaskIntent(BaseModel):
     """Never executes anything -- the Intent Analyzer's sole output. Layer 1 of the pipeline."""
 
@@ -44,6 +57,12 @@ class TaskIntent(BaseModel):
     risk: RiskLevel
     confidence: float = Field(ge=0.0, le=1.0)
     missing_required_inputs: list[str] = Field(default_factory=list)
+    sub_goals: list[SubGoal] = Field(
+        default_factory=list,
+        description="Populated only for a compound goal describing multiple distinct actions in "
+        "sequence. Empty for a single-action goal -- the Planner's existing template/generic-step "
+        "logic handles that case unchanged.",
+    )
     raw_goal: str
     provider: str = Field(description="Provenance tag of the LLM provider that produced this, e.g. 'mock:v1'.")
 

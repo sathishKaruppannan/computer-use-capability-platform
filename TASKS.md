@@ -1308,3 +1308,153 @@ phase. No existing file's prior behavior changed — `CapabilityDescriptor.servi
 additive/optional, `resolution_authorizer` defaults to `None` (identical behavior to Phase 8 when
 omitted), and the discovery collision guard only changes behavior in the exact case it was
 designed to prevent (an id collision with an already-approved capability).
+
+## Phase 10 log — generalizing discovery and the planner
+
+User-selected direction (of three offered): generalize `ClaudeDiscoveryAgent` and the `Planner`,
+the biggest real gap left after Phase 9 (REPORT.md §7 flagged both as hardcoded to the one
+savings-balance scenario). Approved design up front (checkpoint declaration, caller-supplied
+identity hints, sub-goal decomposition, demo_app left unchanged), then implemented, tested, and
+committed in four separate feature commits on `feature/generalize-discovery-and-planner`, per
+explicit instruction to run autonomously and commit feature-by-feature.
+
+### Commit 1 — generalize `ClaudeDiscoveryAgent` (`911aeb7`)
+
+Every part of the compiled artifact's identity was hardcoded to the savings-balance scenario:
+- **Completion checkpoint**: `action="complete"` now requires the model to also declare
+  `strategy`/`value`/`name` — the same locator vocabulary already used for click/extract —
+  identifying what on the page confirms the goal is done. The loop builds a `Target` from it and
+  re-verifies it's actually visible before accepting completion, replacing the fixed "Savings
+  Account" text check. `demo_v1.py`'s prompt updated to match (it reuses `production_v1`'s tool
+  schema unchanged, so both variants needed the same instruction).
+- **Caller-supplied identity**: `discover()` gained optional `capability_hint`/`name_hint`/
+  `description_hint`/`output_type_hint`/`output_description_hint` params. Additive and fully
+  backward-compatible — omitted (as the plain `discover` CLI command and `/v1/discover` both
+  still do), behavior is byte-for-byte unchanged from before this phase.
+- New pure-function unit tests (`_slugify`, `_derive_tags`) in `test_discovery_templating.py`,
+  matching that file's existing no-mock convention.
+
+**Trade-off named, not hidden**: a model-declared checkpoint is real grounding (checked against
+the live page), but a hallucinating model could in principle declare something trivially
+always-visible. No extra anti-hallucination machinery was added for this — that's a different,
+larger piece of scope (the mega-prompt's Section 13), not this phase's job.
+
+### Commit 2 — wire the orchestrator to pass the hints through (`ab5954b`)
+
+`AgentOrchestrator._run_discovery` now derives `capability_hint` (from `TaskIntent.intent`),
+`name_hint` (title-cased), `description_hint` (the `PlanStep`'s own description), and
+`output_type_hint`/`output_description_hint` (matched from `TaskIntent.required_outputs` by
+output name) and passes them to `discover()`. `intent.intent == "unknown"` (the
+`IntentAnalysisError` fallback sentinel) is excluded from hinting — nothing meaningful to name an
+artifact from in that case. New test:
+`test_orchestrator.py::test_discovery_fallback_passes_intent_derived_hints`, capturing the actual
+kwargs a stub discovery agent receives.
+
+### Commit 3 — sub-goal decomposition for compound goals (`d855154`)
+
+The Planner could only produce a multi-step plan for a compound goal if the Intent Analyzer
+happened to emit the exact hardcoded template key `"member_lookup_balance_and_note"` — which a
+real LLM call has no way to know to produce (Phase 9 proved this empirically: a live call for
+this exact goal produced `retrieve_account_balance_and_create_note`, a novel id, correctly
+falling back to one generic step).
+
+New `TaskIntent.sub_goals: list[SubGoal]` field, populated by the *same* intent-analysis LLM call
+— not a second one — when the goal describes multiple distinct actions in sequence.
+`agent/prompts/intent_v1.py` teaches this with a worked example matching the exact 3-part goal
+from Phase 9. `Planner.plan()` uses `sub_goals` when present (taking priority over
+`PLAN_TEMPLATES`), building one `PlanStep` per sub-goal with sequential `depends_on` chaining and
+code-side risk assignment (read→READ_ONLY, write→REVERSIBLE — never model-decided, matching
+`discovery.py`'s own "risk is never model-decided" rule) — falling back to the existing template/
+generic-step logic, completely unchanged, when `sub_goals` is empty. New tests in
+`test_planner.py` (priority ordering, dependency chaining, empty-list fallback) and
+`test_intent_analyzer.py` (round-trip from a mock provider response).
+
+### Commit 4 — fix: `PlanValidationError` crashed the CLI/REST with a raw traceback (`558fde7`)
+
+**Found via live testing** (see verification below): the very first live run of the new
+sub-goal decomposition against the real compound goal correctly produced a 3-step plan, but
+step-3 needed a `note` input the goal text never supplied. `PlanValidator` correctly rejected
+this (fail closed on missing required input), but nothing caught the resulting
+`PlanValidationError` — it propagated as an unhandled exception, crashing the CLI with a raw
+Python traceback. Fixed at both boundaries, matching the existing `HTTPException(400, ...)`
+pattern already used in `api/v1_routes.py`: `cli.py`'s `plan`/`run` catch it and print a clean
+JSON error (exit 1); `api/agent_routes.py`'s `/agent/plan`/`/agent/execute` catch it and return
+HTTP 400. New tests: `test_agent_api.py`'s two new 400-response tests.
+
+### Live verification (real Anthropic calls, real Playwright, real demo app — not mocked)
+
+**Regression check first** (existing approved capability, unaffected by any of this phase's
+changes since it's pure replay, not discovery): `capability-platform run --goal "Get the savings
+balance for member 10002"` → `status: success`, `outputs: {"savingsBalance": 1220.0}`,
+`resolution_type: computer_use_capability` — evidence run `64b0a1a6-9f9a-417f-b847-c3fed50a2590`.
+Real `artifacts/` confirmed untouched (`git status artifacts/` clean before and after every run
+in this phase, checked every time, not just once).
+
+**Generalized discovery, for real** — a goal nothing like the original scenario, isolated to a
+scratch artifact directory so it could not touch the real catalog:
+```
+ARTIFACT_DIR=/tmp/phase10-verify-artifacts HEADLESS=true uv run capability-platform run \
+  --goal "Find member 10001 and confirm their account status is Active"
+```
+Real result: `intent.intent == "retrieve_member_account_status"` (a novel id, not the
+savings-balance one), resolver correctly found no match and fell back to
+`COMPUTER_USE_DISCOVERY`, and a genuine `ClaudeDiscoveryAgent.discover()` run produced
+`/tmp/phase10-verify-artifacts/retrieve-member-account-status.v1.json` with:
+- `success.target.primary`: `{"strategy": "text", "value": "Status: Active"}` — the model's own
+  declared checkpoint, re-verified live, not the old fixed "Savings Account" oracle.
+- `name`: `"Retrieve Member Account Status"`, `description`: the step's own description.
+- `outputs`: `[{"name": "accountStatus", "type": "string", ...}]` — type/name both intent-derived.
+- `tags`: `["retrieve", "member", "account", "status", "computer-use"]` — derived, not hardcoded.
+- A real 4-step trace: type memberId → click Search → click Open Accounts → extract the status
+  text.
+
+Evidence run `1ec26f08-d035-4e87-8326-ad8b4ac52250`:
+`intent.analyzed → plan.created → plan.validated → capability.candidates_retrieved →
+capability.rejected → discovery.fallback_started → capability.executed → result.aggregated →
+result.synthesized`. Result: `"status": "paused"` pending approval (same draft-lifecycle
+convention as every other discovery run).
+
+**Compound-goal decomposition, for real** — the exact 3-part goal from Phase 9, re-run now that
+sub-goal decomposition exists:
+```
+uv run capability-platform plan --goal "Find member 10001, retrieve the savings balance, and create a servicing note"
+```
+First attempt (no `--context`) correctly failed closed with the new clean error (not a crash):
+`{"error": "plan_validation_failed", "message": "Step 'step-3' is missing required inputs:
+['noteContent']"}` — proving both the sub-goal decomposition *and* the new error-handling fix
+work together for real. Real intent produced: `intent: "retrieve_balance_and_create_note"`,
+3 `sub_goals` matching the worked example almost verbatim, including correctly identifying
+`missing_required_inputs: ["note"]` since the goal never specified note content.
+
+Re-run with `--context "note=Balance confirmed with member"` succeeded — evidence run
+`6499d19a-a160-4bbd-af60-d63aa68287c5`:
+| Step | Description | Resolution |
+|---|---|---|
+| step-1 | Look up member 10001 | `computer_use_discovery` (no matching capability) |
+| step-2 | Retrieve the savings account balance | `computer_use_capability` → `lookup-member-savings-balance.v1` |
+| step-3 | Create a servicing note | `computer_use_discovery` (no matching capability) |
+
+This is the first genuine, live-Claude-call proof of example 3's own description — "each plan
+step may resolve to a different capability source" — not the `MockLLMProvider`-driven proof
+Phase 9 had to settle for.
+
+### Not attempted in this phase, on purpose
+
+Full live *execution* of the "create a servicing note" or "confirm account status" discovery
+steps beyond what's shown above (i.e., letting `ClaudeDiscoveryAgent` actually try to complete
+a note-creation flow) — `demo_app` has no note-creation UI, so a discovery run for that specific
+step would correctly fail (nothing to complete), which is expected and not itself informative to
+re-prove; the value here was proving the *mechanism* (checkpoint declaration, hint-passing,
+sub-goal decomposition) is real, which the account-status run and the plan-level 3-step
+resolution above both already do.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  152 passed, 21 deselected   (up from 150 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
+`git status artifacts/` confirmed clean before and after every live run. Regression check above
+confirms the pre-existing approved capability and replay path are unaffected. Four commits, each
+individually tested and lint-clean before the next began, per instruction to commit
+feature-by-feature.

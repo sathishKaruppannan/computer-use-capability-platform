@@ -219,6 +219,47 @@ async def test_force_rediscover_allows_intentional_overwrite(tmp_path):
     assert reloaded.lifecycle == "draft"
 
 
+async def test_discovery_fallback_passes_intent_derived_hints(tmp_path):
+    """Proves the orchestrator actually steers discover()'s artifact identity from the resolved
+    TaskIntent/PlanStep, instead of leaving it to fall back to discover()'s own hardcoded
+    savings-balance defaults for every goal regardless of what it actually was."""
+    captured: dict = {}
+
+    class _CapturingDiscoveryAgent:
+        async def discover(self, goal, target_url, member_id="10001", **kwargs):
+            captured.update(kwargs)
+            return CapabilityArtifact.model_validate(
+                {
+                    "id": "open-account-preferences-page",
+                    "version": 1,
+                    "name": "stub",
+                    "description": "stub",
+                    "application": {
+                        "vendor": "Interface Demo",
+                        "product": "Legacy Member Servicing",
+                        "base_url": target_url,
+                    },
+                    "inputs": [],
+                    "outputs": [],
+                    "steps": [],
+                    "success": {"kind": "url"},
+                    "discovered_by": "mock:v1",
+                }
+            )
+
+    orchestrator = _build_orchestrator(
+        tmp_path, lambda: _CapturingDiscoveryAgent(), intent_response=OPEN_PREFERENCES_RESPONSE
+    )
+    await orchestrator.execute_goal(
+        "Find member 10001 and open the account preferences page",
+        context={"target_url": "http://127.0.0.1:8001"},
+    )
+
+    assert captured["capability_hint"] == "open_account_preferences_page"
+    assert captured["name_hint"] == "Open Account Preferences Page"
+    assert captured["output_type_hint"] == "string"
+
+
 async def test_resolution_authorizer_denies_execution(tmp_path):
     def _deny(resolution):
         raise PermissionError("client is not authorized for this capability's service_type")

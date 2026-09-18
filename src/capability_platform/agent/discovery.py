@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from uuid import uuid4
 
 from anthropic import APIError as AnthropicAPIError
@@ -121,7 +122,17 @@ class ClaudeDiscoveryAgent:
         extra_known_values: dict[str, str] | None = None,
         system_identifier: str | None = None,
         run_id: str | None = None,
+        capability_hint: str | None = None,
+        name_hint: str | None = None,
+        description_hint: str | None = None,
+        output_type_hint: Literal["string", "integer", "number", "boolean", "object"] | None = None,
+        output_description_hint: str | None = None,
     ) -> CapabilityArtifact:
+        """capability_hint/name_hint/description_hint/output_*_hint let a caller with a
+        TaskIntent (agent/orchestrator.py) steer the compiled artifact's identity instead of the
+        original hardcoded savings-balance scenario. All optional and additive: omitting them
+        (as the plain `discover` CLI command and /v1/discover both still do) preserves the exact
+        prior hardcoded defaults, byte-for-byte, so no existing evidence or test changes meaning."""
         run_id = run_id or str(uuid4())
         evidence = EvidenceCollector(self.evidence_root, run_id)
         surface = PlaywrightSurface(self.headless)
@@ -129,10 +140,9 @@ class ClaudeDiscoveryAgent:
         steps: list[Step] = []
         history: list[dict[str, Any]] = []
         extracted: dict[str, str] = {}
-        success_target = Target(
-            primary=Locator(strategy="text", value="Savings Account", exact=False),
-            rationale="Business-state heading confirms the accounts screen",
-        )
+        # Set for real once the model declares and verifies its own completion checkpoint below
+        # -- discovery no longer assumes every goal ends on the "Savings Account" heading.
+        success_target: Target | None = None
         # known_values drives both the compiled-step templating below and what's actually typed
         # into the browser during discovery (memberId is always known; extra_known_values adds
         # e.g. username/password when the target requires a login first).
@@ -173,13 +183,28 @@ class ClaudeDiscoveryAgent:
                 if action == "complete":
                     if not extracted:
                         raise RuntimeError("Model declared completion before extracting an output")
-                    if not await surface.visible(success_target):
+                    if "strategy" not in decision:
                         raise RuntimeError(
-                            "Model declared completion but the success checkpoint "
-                            f"({success_target.primary.value!r}) is not visible on the page"
+                            "Model declared completion but did not include a 'strategy' locator "
+                            f"identifying what confirms it: {decision!r}"
                         )
+                    completion_locator = Locator(
+                        strategy=decision["strategy"],
+                        value=decision.get("value") or decision.get("name", ""),
+                        name=decision.get("name"),
+                    )
+                    completion_target = Target(
+                        primary=completion_locator,
+                        rationale="Model-declared checkpoint confirming the goal is complete",
+                    )
+                    if not await surface.visible(completion_target):
+                        raise RuntimeError(
+                            "Model declared completion but the declared checkpoint "
+                            f"({completion_locator.value!r}) is not visible on the page"
+                        )
+                    success_target = completion_target
                     evidence.event(
-                        "discovery.checkpoint_verified", target=success_target.primary.value
+                        "discovery.checkpoint_verified", target=completion_locator.value
                     )
                     break
                 if action == "escalate":
@@ -246,16 +271,23 @@ class ClaudeDiscoveryAgent:
             else:
                 raise RuntimeError("Discovery exceeded maximum steps")
 
-            # Special-cased, not derived uniformly: the existing demo capability keeps its
-            # original id regardless of this change, so nothing already committed (dashboard
-            # defaults, docs, prior artifacts) is disrupted. Only a genuinely different
-            # system_identifier gets a derived id, which is what lets it coexist as its own,
-            # independently discoverable/approvable capability.
-            artifact_id = (
-                f"lookup-savings-balance-{system_identifier}"
-                if system_identifier and system_identifier != "legacy-member-servicing-demo"
-                else "lookup-member-savings-balance"
-            )
+            if capability_hint:
+                # Caller (agent/orchestrator.py) supplied a TaskIntent-derived hint -- derive the
+                # id from that instead of the original hardcoded savings-balance scenario id.
+                artifact_id = self._slugify(capability_hint)
+                if system_identifier and system_identifier != "legacy-member-servicing-demo":
+                    artifact_id = f"{artifact_id}-{system_identifier}"
+            else:
+                # Special-cased, not derived uniformly: the existing demo capability keeps its
+                # original id regardless of this change, so nothing already committed (dashboard
+                # defaults, docs, prior artifacts) is disrupted. Only a genuinely different
+                # system_identifier gets a derived id, which is what lets it coexist as its own,
+                # independently discoverable/approvable capability.
+                artifact_id = (
+                    f"lookup-savings-balance-{system_identifier}"
+                    if system_identifier and system_identifier != "legacy-member-servicing-demo"
+                    else "lookup-member-savings-balance"
+                )
             inputs = [
                 ParameterSpec(
                     name="memberId",
@@ -266,8 +298,9 @@ class ClaudeDiscoveryAgent:
             ] + self._credential_input_specs(extra_known_values)
             artifact = CapabilityArtifact(
                 id=artifact_id,
-                name="Lookup member savings balance",
-                description="Find a member in the legacy demo app and return the savings balance.",
+                name=name_hint or "Lookup member savings balance",
+                description=description_hint
+                or "Find a member in the legacy demo app and return the savings balance.",
                 application=ApplicationBinding(
                     vendor="Interface Demo", product="Legacy Member Servicing", base_url=target_url
                 ),
@@ -275,8 +308,8 @@ class ClaudeDiscoveryAgent:
                 outputs=[
                     OutputSpec(
                         name=next(iter(extracted)),
-                        type="number",
-                        description="Current savings balance",
+                        type=output_type_hint or "number",
+                        description=output_description_hint or "Current savings balance",
                     )
                 ],
                 steps=steps,
@@ -287,7 +320,7 @@ class ClaudeDiscoveryAgent:
                     if self._fallback_used
                     else f"anthropic:{self.model} prompt={self.prompt.qualified_id}"
                 ),
-                tags=["member", "savings", "balance", "computer-use"],
+                tags=self._derive_tags(capability_hint),
             )
             self._enrich_errors(artifact)
             artifact_path = self.evidence_root / "runs" / run_id / "artifact.json"
@@ -336,6 +369,19 @@ class ClaudeDiscoveryAgent:
             )
             for credential_name in (extra_known_values or {})
         ]
+
+    @staticmethod
+    def _slugify(text: str) -> str:
+        """Turns a TaskIntent.intent-style string (already snake_case) into a dash-separated,
+        id-safe slug -- e.g. 'retrieve_account_balance' -> 'retrieve-account-balance'."""
+        return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+    @staticmethod
+    def _derive_tags(capability_hint: str | None) -> list[str]:
+        if not capability_hint:
+            return ["member", "savings", "balance", "computer-use"]
+        words = [word for word in capability_hint.lower().split("_") if word]
+        return [*dict.fromkeys(words), "computer-use"]
 
     @classmethod
     def _classify_risk(cls, action: ActionType, target: Target | None) -> RiskLevel:

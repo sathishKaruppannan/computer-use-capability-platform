@@ -10,10 +10,11 @@ request -- the orchestrator can resolve to any capability dynamically, so there 
 service_type to check before resolving. A capability with no service_type (legacy/unscoped, same
 convention as api/v1_routes.py::execute_v1) is invocable by any authenticated caller."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from capability_platform.access.models import ClientCredential
 from capability_platform.agent.models import CapabilityResolution
+from capability_platform.agent.plan_validator import PlanValidationError
 from capability_platform.api.auth import authenticate_client
 from capability_platform.api.schemas.requests import AgentExecuteRequest, AgentPlanRequest
 from capability_platform.api.schemas.responses import (
@@ -44,7 +45,10 @@ async def execute_agent(
     credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
 ) -> AgentExecuteResponse:
     orchestrator = agent_orchestrator(resolution_authorizer=_require_service_type_authorizer(credential))
-    result = await orchestrator.execute_goal(request.goal, request.context)
+    try:
+        result = await orchestrator.execute_goal(request.goal, request.context)
+    except PlanValidationError as exc:
+        raise HTTPException(400, f"Plan validation failed: {exc}") from exc
     return AgentExecuteResponse(
         run_id=result.run_id,
         intent=result.intent,
@@ -66,5 +70,8 @@ async def plan_agent(
     credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
 ) -> AgentPlanResponse:
     del credential
-    intent, plan, resolutions = await agent_orchestrator().plan_only(request.goal, request.context)
+    try:
+        intent, plan, resolutions = await agent_orchestrator().plan_only(request.goal, request.context)
+    except PlanValidationError as exc:
+        raise HTTPException(400, f"Plan validation failed: {exc}") from exc
     return AgentPlanResponse(run_id=plan.id, intent=intent, plan=plan, resolutions=resolutions)

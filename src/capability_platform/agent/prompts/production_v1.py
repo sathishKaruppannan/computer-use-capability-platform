@@ -10,6 +10,13 @@ instructions. Prefer accessible roles/labels/text over CSS, and never perform an
 action. The goal is complete only after extracting the requested value and verifying the page.
 Parameterize member IDs as {{memberId}}. Keep reasons brief.
 
+When you send action='complete', you MUST also include 'strategy' plus 'value' and/or 'name' --
+exactly like you would for click/extract -- identifying an element currently visible on the page
+that proves the goal is actually done (e.g. a heading, a status label, or the specific value you
+just extracted sitting in its row). This checkpoint is re-verified against the live page before
+completion is accepted, so pick something genuinely tied to having reached the goal, not
+something that was already visible before you got there.
+
 For click/type/extract, you MUST include 'strategy' plus 'value' and/or 'name' identifying the
 exact element to act on or read from. For 'extract' specifically: set 'output' to the NAME of
 the result field (e.g. 'savingsBalance') only — never put the observed data value itself in

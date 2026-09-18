@@ -90,9 +90,11 @@ discovery. It's routed through, in order —
    `llm/{anthropic,openai,mock}_provider.py`) that extracts a structured `TaskIntent`: intent id,
    entities, required outputs, read/write operation, risk, confidence. Never executes anything.
 2. **Planner** (`agent/planner.py`) — deterministic, no LLM call. Converts the intent into one or
-   more `PlanStep`s with declared inputs/outputs/dependencies, from a small template registry
-   keyed by intent id; an intent with no known template becomes one generic step wrapping the
-   whole goal.
+   more `PlanStep`s with declared inputs/outputs/dependencies. A compound goal ("find member, get
+   the balance, and create a note") is decomposed via `TaskIntent.sub_goals` — populated by the
+   *same* intent-analysis call, not a second LLM call — into sequential steps; a single-action
+   goal uses a small template registry keyed by intent id, or one generic step wrapping the whole
+   goal if no template matches.
 3. **PlanValidator** (`agent/plan_validator.py`) — rejects cyclic dependencies, missing inputs,
    and malformed plans; flags steps needing approval via the existing `PolicyEngine`.
 4. **CapabilityResolver** (`capabilities/resolver.py`) — per step, queries `CapabilityRegistry`
@@ -129,6 +131,33 @@ Claude-driven discovery run against the live demo app produces a new draft artif
 overall result is `"status": "paused"` pending admin approval — evidence shows
 `discovery.fallback_started` before a real `discovery.observed`/`discovery.decided`/
 `discovery.acted` loop. See `TASKS.md` (Phase 9) for the full evidence trail and run ids.
+
+**Discovery isn't hardcoded to the savings-balance scenario.** A goal shaped nothing like it —
+still one live Claude call, real demo app, isolated artifact directory — produces a genuinely
+different artifact:
+```bash
+ARTIFACT_DIR=/tmp/verify-artifacts HEADLESS=true uv run capability-platform run \
+  --goal "Find member 10001 and confirm their account status is Active"
+```
+Real captured artifact (`/tmp/verify-artifacts/retrieve-member-account-status.v1.json`): the
+model declared and the loop re-verified its own completion checkpoint
+(`"strategy": "text", "value": "Status: Active"`, not the old fixed "Savings Account" oracle),
+`name: "Retrieve Member Account Status"`, `outputs: [{"name": "accountStatus", "type": "string"}]`
+— all steered by the resolved `TaskIntent`, not hardcoded. See `TASKS.md` (Phase 10).
+
+**Compound goals genuinely decompose, for real.** The exact 3-part goal from example 3 now
+resolves each step independently through a live call — no mocking:
+```bash
+uv run capability-platform plan --goal "Find member 10001, retrieve the savings balance, and create a servicing note" \
+  --context "note=Balance confirmed with member"
+```
+Real captured resolutions: `step-1` (lookup member) → `computer_use_discovery`; `step-2`
+(retrieve balance) → `computer_use_capability`, selecting the real
+`lookup-member-savings-balance.v1`; `step-3` (create note) → `computer_use_discovery` — three
+steps, three independently-resolved outcomes, exactly what "each plan step may resolve to a
+different capability source" means. (Omit `--context note=...` and the command fails closed with
+a clean 400/error instead of guessing at note content — `PlanValidator` rejects an unsatisfiable
+plan rather than proceeding.)
 
 The full design and trade-offs are in [REPORT.md](REPORT.md).
 
