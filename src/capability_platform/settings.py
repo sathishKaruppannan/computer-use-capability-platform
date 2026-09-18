@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # provider swap. See agent/discovery.py's per-call fallback in _decide().
     openai_api_key: str | None = None
     openai_model: str = "gpt-5-mini"
+    # Optional upgrade for CapabilityRegistry's retrieval step -- reuses the same OPENAI_API_KEY
+    # as the discovery fallback above, opt-in only. See capabilities/embeddings.py.
+    openai_embedding_model: str = "text-embedding-3-small"
     target_url: str = "http://127.0.0.1:8001"
     platform_url: str = "http://127.0.0.1:8000"
     headless: bool = False
