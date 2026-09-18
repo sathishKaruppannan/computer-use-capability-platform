@@ -126,8 +126,41 @@ def test_output_incompatible_capability_is_rejected():
 
 
 def test_extra_required_input_the_step_cannot_supply_is_rejected():
-    """A capability needing MORE inputs than the step declares (e.g. a login-gated variant
-    needing username/password) must not be selected just because it also accepts memberId."""
+    """A capability needing MORE inputs than the step declares must not be selected just because
+    it also accepts memberId -- unless that extra input is a known credential field name
+    (username/password), which is satisfiable via the per-client TenantCredentialStore at
+    execution time, not something the plan step needs to declare in advance."""
+    registry = CapabilityRegistry(
+        [
+            CapabilityDescriptor(
+                id="needs-account-number",
+                name="Savings balance lookup requiring an unrelated extra field",
+                description="Look up a member's savings balance",
+                source="computer_use",
+                input_schema={
+                    "memberId": {"type": "string", "required": True},
+                    "accountNumber": {"type": "string", "required": True},
+                },
+                output_schema={"savingsBalance": {"type": "number"}},
+                risk=RiskLevel.READ_ONLY,
+                trust="approved",
+                reliability=1.0,
+                tags=["member", "savings", "balance"],
+            )
+        ]
+    )
+    resolution = _resolver(registry).resolve(_balance_step(), context={"allow_discovery": False})
+    assert resolution.resolution_type == ResolutionType.UNRESOLVED
+    [candidate] = resolution.alternatives
+    assert candidate.input_compatible is False
+
+
+def test_login_gated_capability_is_input_compatible_via_credential_store():
+    """The credential-store design point: a login-gated capability needing username/password
+    beyond what the step declares IS input-compatible (those fields are pulled from
+    TenantCredentialStore at execution time), even though it still isn't SELECTED over a
+    credential-free alternative when both are otherwise equal (see the real-artifacts resolver
+    test above, which proves lookup-member-savings-balance.v1 still wins the tie-break)."""
     registry = CapabilityRegistry(
         [
             CapabilityDescriptor(
@@ -149,6 +182,8 @@ def test_extra_required_input_the_step_cannot_supply_is_rejected():
         ]
     )
     resolution = _resolver(registry).resolve(_balance_step(), context={"allow_discovery": False})
-    assert resolution.resolution_type == ResolutionType.UNRESOLVED
+    # Still UNRESOLVED overall in this isolated test -- the descriptor id isn't a real artifact
+    # on disk, so _policy_ok's authorize_url check fails for an unrelated reason. The point under
+    # test is specifically input_compatible, asserted directly below.
     [candidate] = resolution.alternatives
-    assert candidate.input_compatible is False
+    assert candidate.input_compatible is True

@@ -2,6 +2,7 @@ from collections.abc import Callable
 
 from capability_platform.access.credentials import JSONCredentialStore
 from capability_platform.access.system_registry import JSONSystemRegistry
+from capability_platform.access.tenant_credentials import JSONTenantCredentialStore
 from capability_platform.access.tracking import JSONInquiryTracker
 from capability_platform.agent.discovery import ClaudeDiscoveryAgent
 from capability_platform.agent.intent_analyzer import IntentAnalyzer
@@ -49,6 +50,10 @@ def credential_store() -> JSONCredentialStore:
     return JSONCredentialStore(settings.credential_dir)
 
 
+def tenant_credential_store() -> JSONTenantCredentialStore:
+    return JSONTenantCredentialStore(settings.tenant_credential_dir)
+
+
 def system_registry() -> JSONSystemRegistry:
     return JSONSystemRegistry(settings.system_registry_path)
 
@@ -78,7 +83,7 @@ def capability_resolver() -> CapabilityResolver:
 
 
 def capability_executor() -> CapabilityExecutor:
-    return CapabilityExecutor(store(), replay_engine)
+    return CapabilityExecutor(store(), replay_engine, tenant_credential_store())
 
 
 def agent_orchestrator(

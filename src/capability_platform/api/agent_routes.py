@@ -13,7 +13,10 @@ convention as api/v1_routes.py::execute_v1) is invocable by any authenticated ca
 from fastapi import APIRouter, Depends, HTTPException
 
 from capability_platform.access.models import ClientCredential
-from capability_platform.agent.intent_analyzer import ClarificationRequiredError
+from capability_platform.agent.intent_analyzer import (
+    ClarificationRequiredError,
+    SensitiveInfoRequestedError,
+)
 from capability_platform.agent.models import CapabilityResolution
 from capability_platform.agent.plan_validator import PlanValidationError
 from capability_platform.api.auth import authenticate_client
@@ -24,8 +27,20 @@ from capability_platform.api.schemas.responses import (
     AgentResultSummary,
 )
 from capability_platform.runtime import agent_orchestrator
+from capability_platform.validation import GoalTooLongError
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+
+
+def _build_context(request: AgentExecuteRequest | AgentPlanRequest, credential: ClientCredential) -> dict:
+    # credential.client_id always wins over anything the caller put in their own context dict --
+    # it's the authenticated identity credentials are looked up by, never something a client can
+    # override by naming a "client_id" key in an arbitrary context payload.
+    context = {**request.context}
+    if request.target_url:
+        context["target_url"] = request.target_url
+    context["client_id"] = credential.client_id
+    return context
 
 
 def _require_service_type_authorizer(credential: ClientCredential):
@@ -47,9 +62,15 @@ async def execute_agent(
 ) -> AgentExecuteResponse:
     orchestrator = agent_orchestrator(resolution_authorizer=_require_service_type_authorizer(credential))
     try:
-        result = await orchestrator.execute_goal(request.goal, request.context)
+        result = await orchestrator.execute_goal(
+            request.goal, _build_context(request, credential), run_id=request.run_id
+        )
+    except GoalTooLongError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except ClarificationRequiredError as exc:
         raise HTTPException(400, f"Clarification required: {exc.question}") from exc
+    except SensitiveInfoRequestedError as exc:
+        raise HTTPException(400, f"Not allowed to provide this information: {exc.reason}") from exc
     except PlanValidationError as exc:
         raise HTTPException(400, f"Plan validation failed: {exc}") from exc
     return AgentExecuteResponse(
@@ -72,11 +93,16 @@ async def plan_agent(
     request: AgentPlanRequest,
     credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
 ) -> AgentPlanResponse:
-    del credential
     try:
-        intent, plan, resolutions = await agent_orchestrator().plan_only(request.goal, request.context)
+        intent, plan, resolutions = await agent_orchestrator().plan_only(
+            request.goal, _build_context(request, credential)
+        )
+    except GoalTooLongError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except ClarificationRequiredError as exc:
         raise HTTPException(400, f"Clarification required: {exc.question}") from exc
+    except SensitiveInfoRequestedError as exc:
+        raise HTTPException(400, f"Not allowed to provide this information: {exc.reason}") from exc
     except PlanValidationError as exc:
         raise HTTPException(400, f"Plan validation failed: {exc}") from exc
     return AgentPlanResponse(run_id=plan.id, intent=intent, plan=plan, resolutions=resolutions)

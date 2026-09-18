@@ -1,7 +1,7 @@
 import inspect
 
-from capability_platform.agent.models import RequiredOutput, TaskIntent
-from capability_platform.models import RiskLevel, RunStatus
+from capability_platform.agent.models import CapabilityExecutionResult, RequiredOutput, TaskIntent
+from capability_platform.models import ErrorCategory, RiskLevel, RunError, RunStatus
 from capability_platform.synthesis.result import GroundedSynthesizer
 
 
@@ -24,9 +24,11 @@ def _intent(**overrides) -> TaskIntent:
 def test_synthesizer_has_no_llm_output_parameter():
     """The mechanism, not a convention: synthesize_agent_result's signature has no parameter an
     LLM provider's raw output could ever flow through, so no adversarial provider response can
-    reach a numeric/entity value in the returned text -- there is no code path for it to take."""
+    reach a numeric/entity value in the returned text -- there is no code path for it to take.
+    `execution` (list[CapabilityExecutionResult]) is canonical fact already computed by the
+    deterministic executor/aggregator, not LLM output -- adding it doesn't weaken this guarantee."""
     signature = inspect.signature(GroundedSynthesizer.synthesize_agent_result)
-    assert list(signature.parameters) == ["intent", "outputs", "status", "business_code"]
+    assert list(signature.parameters) == ["intent", "outputs", "status", "business_code", "execution"]
     for name, param in signature.parameters.items():
         assert param.annotation not in ("LLMProvider",), name
 
@@ -63,3 +65,56 @@ def test_business_outcome_and_failure_never_reported_as_success():
         intent=_intent(), outputs={}, status=RunStatus.FAILURE
     )
     assert "Could not complete" in failure
+
+
+def test_paused_with_fresh_discovery_draft_returns_the_user_facing_draft_message():
+    execution = [
+        CapabilityExecutionResult(
+            step_id="step-1",
+            descriptor_id="open-account-preferences.v1",
+            status=RunStatus.PAUSED,
+            raw_execution_result={"artifact_id": "open-account-preferences.v1", "lifecycle": "draft"},
+        )
+    ]
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(), outputs={}, status=RunStatus.PAUSED, execution=execution
+    )
+    assert text == (
+        "A new capability draft ('open-account-preferences.v1') has been created for this goal. "
+        "Please ask your admin to review and approve it, then try again."
+    )
+
+
+def test_paused_without_a_discovery_draft_falls_back_to_the_generic_approval_message():
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(), outputs={}, status=RunStatus.PAUSED, execution=[]
+    )
+    assert "awaiting human approval" in text
+
+
+def test_failure_surfaces_the_real_step_error_message():
+    execution = [
+        CapabilityExecutionResult(
+            step_id="step-1",
+            descriptor_id="secure-cap.v1",
+            status=RunStatus.FAILURE,
+            error=RunError(
+                category=ErrorCategory.AUTH,
+                code="CREDENTIALS_REQUIRED",
+                message="Capability 'secure-cap.v1' requires login credentials that have not been saved.",
+                step_id="step-1",
+                recoverable=False,
+            ),
+        )
+    ]
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(), outputs={}, status=RunStatus.FAILURE, execution=execution
+    )
+    assert "requires login credentials that have not been saved" in text
+
+
+def test_failure_without_a_captured_error_falls_back_to_the_generic_message():
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(), outputs={}, status=RunStatus.FAILURE, execution=[]
+    )
+    assert "see execution details" in text

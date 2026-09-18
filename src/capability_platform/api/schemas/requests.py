@@ -111,12 +111,27 @@ class AgentExecuteRequest(BaseModel):
         f"{settings.max_goal_length} characters -- this is a demo target, not a production "
         "system, and every goal drives at least one real LLM call.",
     )
+    target_url: str | None = Field(
+        default=None,
+        description="Optional explicit target application URL. Only consulted if resolution "
+        "falls back to computer-use discovery for a step -- an already-resolved deterministic "
+        "capability replays against its own recorded application binding regardless of this "
+        "value. Equivalent to context={'target_url': ...} below; a first-class field for "
+        "discoverability.",
+    )
     context: dict[str, Any] = Field(
         default_factory=dict,
         description="Optional execution context: tenant_id, target_url, memberId, "
         "allow_discovery, or any other value a plan step's inputs may need.",
     )
     client_inquiry_id: str = Field(description="Caller-generated correlation id for this run.")
+    run_id: str | None = Field(
+        default=None,
+        description="Optional caller-generated run id, mirroring DiscoverV1Request.discovery_run_id. "
+        "A goal that falls back to computer-use discovery can take ~30-90s; supplying this up front "
+        "lets a UI poll GET /runs/{id}/events for live progress on this same run while the call is "
+        "still in flight, instead of only seeing the trace after it completes.",
+    )
 
 
 class AgentPlanRequest(BaseModel):
@@ -124,6 +139,7 @@ class AgentPlanRequest(BaseModel):
         max_length=settings.max_goal_length,
         description="Same as AgentExecuteRequest.goal, but nothing is executed.",
     )
+    target_url: str | None = Field(default=None, description="Same as AgentExecuteRequest.target_url.")
     context: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -139,3 +155,27 @@ class ExecuteV1Request(BaseModel):
         "ExecutionResult.error with category='validation' and recoverable=false, since resending "
         "the same invalid inputs will fail identically."
     )
+
+
+class ApproveV1Request(BaseModel):
+    """Optional body for POST /v1/capabilities/{id}/approve. Provide client_id + username +
+    password together to also save login credentials for that client as part of approval, so a
+    login-gated capability is immediately replayable rather than needing a separate
+    POST .../credentials call right after. Omit entirely for a capability that doesn't need
+    login credentials."""
+
+    client_id: str | None = None
+    username: str | None = None
+    password: str | None = None
+
+
+class SaveCredentialsRequest(BaseModel):
+    """Body for POST /v1/capabilities/{id}/credentials -- lets an admin add (or replace) stored
+    login credentials for one client, for an already-approved capability, without re-approving
+    it. Only username/password are supported for now (the one auth mode this system's discovery
+    and replay actually drive)."""
+
+    client_id: str = Field(description="Which client these credentials belong to -- looked up "
+        "automatically at execution time by the calling client's own authenticated client_id.")
+    username: str
+    password: str

@@ -1655,3 +1655,174 @@ run `0ba21a99-3e01-44b3-910a-7a638b4f5186`. `git status artifacts/` confirmed cl
 uv run pytest -q -m "not e2e"   →  170 passed, 21 deselected   (up from 163 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 14 log — per-client credentials, sensitive-info guardrail, chatbot admin console
+
+User request (verbatim intent, condensed): support `goal + target_url` together; a goal that
+needs a brand-new capability should discover it and respond "a new draft has been created, ask
+your admin to approve it, then try again"; admin approval should optionally attach login
+credentials, stored **separately from the artifact** and **keyed per client**, so the same
+login-gated capability can be reused by multiple clients each with their own credentials; a goal
+should transparently pull whatever it needs (intent, plan, capability, credentials, service type)
+and return a synthesized response; an unknown/unresolvable goal must still get a clean response,
+never a crash; a request for sensitive info (SSN, password, API key, session token, unmasked
+account number) must be refused outright ("not allowed to provide this info"); and the admin
+console should gain a chatbot-style goal entry, a reference panel of example goals per scenario,
+and a "what's happening behind the scenes" trace panel for demoing the pipeline to an interviewer
+in AI/technical terms.
+
+Branch: `feature/credentials-guardrails-chatbot`. Two design decisions confirmed with the user
+before implementing: (1) the per-client "client identifier" for stored credentials reuses the
+existing authenticated REST `client_id` (HTTP Basic, `ClientCredential`) rather than inventing a
+new identifier; (2) "sensitive info" for the new guardrail is the same category the existing
+`Redactor` already treats as secret (full SSN, password/auth token/API key, session/cookie value,
+full unmasked account number) — not a separate taxonomy.
+
+### Per-client credential store
+
+New `access/tenant_credentials.py`: `CREDENTIAL_FIELD_NAMES = frozenset({"username", "password"})`
+(matches `agent/discovery.py::_credential_input_specs` exactly), a `TenantCredentialStore`
+protocol, and `JSONTenantCredentialStore` — one JSON file per `(capability_id, client_id)` pair
+under `data/tenant_credentials/`, mirroring `access/credentials.py`'s existing `JSONCredentialStore`
+shape. New `TenantCredential` model (`access/models.py`) is deliberately plaintext at rest, unlike
+`ClientCredential`'s one-way hash — this value has to be *retrieved* and typed into a login form at
+replay time, not just verified; documented as the demo-appropriate simplification of the full
+multi-tenant auth design in this file's Phase 11 log.
+
+**Resolver**: username/password are now name-matched (not `sensitive`-flag-matched — `username`
+is deliberately not marked `sensitive=True` on its own `ParameterSpec`) against
+`CREDENTIAL_FIELD_NAMES` and treated as satisfiable via the credential store rather than fields the
+plan step must declare in advance. `resolve()`'s selection tie-breaks toward fewer credential
+fields when candidates otherwise score equally, so a no-login capability is still preferred over a
+login-gated one when both would work — live-verified: with both the open and login-gated capability
+present, the open one is always selected; only when the open one is removed does the login-gated
+one get selected (and then successfully executes via stored credentials — see Live verification).
+
+**Executor**: `CapabilityExecutor` gained a `tenant_credential_store` and `execute(..., client_id=...)`.
+The `computer_use` adapter now computes the artifact's declared credential fields, pulls any
+missing ones from the store for `(descriptor_id, client_id)`, and — only if still missing after
+that — fails cleanly with a new `CREDENTIALS_REQUIRED` error (`category=AUTH`, `recoverable=False`,
+message naming the exact admin endpoint to call) instead of ever reaching the replay engine with
+an incomplete login. Credentials are looked up fresh on every execution, never cached, never
+written into an artifact or an evidence log.
+
+**Admin endpoints** (`api/v1_routes.py`): `POST /v1/capabilities/{id}/approve` now accepts an
+optional body (`client_id`/`username`/`password`) — when all three are present, it also saves
+credentials for that client as part of the same approval call. New
+`POST /v1/capabilities/{id}/credentials` lets an admin add or replace credentials for an
+additional client on an already-approved capability (proving the actual multi-tenant-reuse point:
+one artifact, many clients, each with their own stored login) — admin-only, requires the
+capability to already declare a credential field, requires it to already be approved.
+
+### Sensitive-info guardrail
+
+Same shape as Phase 12's ambiguous-goal clarification handling. `TaskIntent` gained
+`requests_sensitive_info: bool` + `sensitive_info_reason: str | None` (additive, default falsy).
+The intent-analysis prompt (`agent/prompts/intent_v1.py`) teaches the model to set these ONLY for
+a goal asking to retrieve/display a full SSN, a password/login credential, an auth token/API key,
+a session/cookie value, or a full unmasked account/card number — and to refuse the WHOLE goal, not
+partially answer, when a legitimate request is combined with a sensitive one in the same goal
+("get the balance and the full SSN"). New `SensitiveInfoRequestedError` (co-located with
+`ClarificationRequiredError` in `agent/intent_analyzer.py`), raised by
+`AgentOrchestrator._intent_plan_resolve` right after intent analysis, before any planning or
+resolution — caught at the CLI (`plan`/`run`) and REST (`/agent/plan`/`/agent/execute`)
+boundaries, same pattern as every other short-circuit guardrail in this pipeline.
+
+### Discovery failure is now a clean result, not a crash
+
+Found during live verification (not anticipated up front): a goal with no sensible business
+meaning on the target system (e.g. "Reticulate the splines for member 10001") drove live
+discovery down a path where Claude tried to interact with a page element that didn't exist,
+raising an unhandled `LookupError` that propagated all the way to a raw `500 Internal Server
+Error` — exactly the "unknown goal" case the user explicitly called out ("If any unknown goal, it
+should return proper response"). Fixed in `AgentOrchestrator._run_discovery`: the `discover()`
+call is now wrapped in `except Exception`, converted into a typed `FAILURE`
+`CapabilityExecutionResult` (`category=INTERNAL`, `code="DISCOVERY_FAILED"`) instead of an
+unhandled exception. The message is deliberately generic (exception type name only, not the raw
+`str(exc)`, which could echo untrusted page-derived text per architecture rule #1) — the full
+redacted step-by-step detail is still available via that run's own evidence trace. Regression test
+added in `test_orchestrator.py` reproducing the exact `LookupError` observed live.
+
+### Goal + target_url as first-class fields
+
+`AgentExecuteRequest`/`AgentPlanRequest` already had `target_url` (added earlier this phase,
+verified still correct); `AgentExecuteRequest` also gained an optional `run_id` (mirroring
+`DiscoverV1Request.discovery_run_id`) so a caller can pre-generate a run id and poll
+`GET /runs/{id}/events` for live progress while a slow (discovery-triggering) call is still in
+flight — `AgentOrchestrator.execute_goal` now accepts `run_id` and uses it instead of generating
+its own when supplied. CLI `plan`/`run` gained a first-class `--target-url` flag (previously only
+reachable via `--context target_url=...`), via a new `build_goal_context()` helper.
+
+### Admin console: chatbot, examples, live trace (`api/admin.py`)
+
+New §0 "Try a goal" section, ahead of the existing walkthrough sections:
+- **Chatbot**: a goal textarea + optional advanced target-URL field, calling the real
+  `POST /agent/execute` and rendering the synthesized response as a chat bubble (refusals/errors
+  styled distinctly). This is the single entry point that exercises the whole
+  Intent → Plan → Resolve → Execute → Synthesize pipeline end to end — the same call the rest of
+  the page's §1–§8 exercise piece by piece.
+- **Example goals panel** (collapsible): one goal per scenario — existing-capability match,
+  goal+URL discovery fallback, login-gated capability, ambiguous-goal clarification, sensitive-info
+  refusal, unknown/unresolvable goal — each with a note on what it demonstrates and why, click to
+  fill the goal box.
+- **Trace panel** (collapsible, auto-opens after a send): fetches the real
+  `GET /runs/{run_id}/events` for the just-completed run and relabels each real evidence event
+  through a new `friendlyEvent()` mapping (LLM called → intent identified, orchestration → plan
+  created/validated, capability candidates retrieved/selected/rejected, discovery started/decided/
+  completed, capability executed, outputs aggregated, response synthesized, etc.) — nothing here
+  is fabricated client-side, it's the same redacted evidence trail §7 Observability already reads,
+  just relabeled for a non-engineer audience.
+
+### New tests (batched, per this phase's own explicit instruction to implement first and test
+after)
+
+`tests/test_tenant_credentials.py` (store round-trip, per-client isolation, overwrite semantics),
+`tests/test_capability_executor.py` (new file — missing-credentials failure, auto-injection
+success, per-client scoping, no-login capability never touches the store),
+`tests/test_capability_resolver.py` (credential fields are input-compatible via the store; fixed
+one existing test whose premise the design change invalidated), `tests/test_intent_analyzer.py` +
+`tests/test_orchestrator.py` + `tests/test_agent_api.py` (sensitive-info guardrail round-trip and
+short-circuit at every layer; the new discovery-failure regression test),
+`tests/test_v1_api_auth.py` (approve-with-credentials, save-credentials — admin-only, requires
+prior approval, requires a declared credential field, second-client reuse on the same capability),
+`tests/test_synthesis_grounded.py` (the refined PAUSED "draft created" and FAILURE "real error
+message" branches), `tests/test_cli.py` (new file — `build_goal_context`'s `--target-url`
+handling), `tests/test_admin_endpoints.py` (smoke check that the new chatbot/examples/trace markup
+actually renders).
+
+### Live verification
+
+Two isolated servers (ports 8001/8201, distinct from the user's own already-running instance on
+8000) against a scratch copy of `artifacts/`/`data/`/`config/` — real Claude calls throughout,
+`git status artifacts/ data/ config/` confirmed clean in the real repo before and after:
+
+1. **Normal capability match** — `POST /agent/execute` with "Find member 10002 and return savings
+   balance": real intent analysis (`retrieve_account_balance`, confidence 0.95) → real Playwright
+   replay → `status: success`, `savingsBalance: 1220.0`.
+2. **Sensitive-info guardrail** — "What is member 10002's full Social Security Number?" →
+   `HTTP 400`, `"Not allowed to provide this information: Full SSNs are not provided through this
+   system"`.
+3. **Ambiguous-goal clarification** — "Handle this member." → `HTTP 400`, clarification question.
+4. **Unknown/unresolvable goal** — "Reticulate the splines for member 10001" (before the discovery
+   crash fix: raw `500 Internal Server Error` with a Python traceback, confirming the bug was
+   real; after the fix): `HTTP 200`, `status: failure`, `error.code: "DISCOVERY_FAILED"`, a clean
+   synthesized explanation — never a crash.
+5. **Approve-with-credentials + save-credentials** — approved the real login-gated
+   `lookup-savings-balance-legacy-member-servicing-demo-secure.v1` with credentials for
+   `demo-client` in one call; separately saved credentials for a second client on the same,
+   already-approved capability via the standalone endpoint.
+6. **Full credential auto-injection, end to end** — with the open (no-login) capability
+   temporarily removed from the scratch copy only, `POST /agent/execute` for the same savings-
+   balance goal resolved to the login-gated capability and **succeeded** (`savingsBalance: 1220.0`)
+   using the stored `demo-client` credentials, with zero credentials in the request — a real
+   Playwright login driven entirely by the per-client store.
+7. **Missing-credentials failure** — the same goal from a second, credential-less client →
+   `status: failure`, `error.code: "CREDENTIALS_REQUIRED"`, admin-facing message naming the exact
+   endpoint to call.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  204 passed, 21 deselected   (up from 171 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```

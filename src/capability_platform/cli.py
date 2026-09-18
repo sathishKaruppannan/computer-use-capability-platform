@@ -5,7 +5,10 @@ import sys
 
 from capability_platform.access.credentials import hash_password
 from capability_platform.access.models import ClientCredential
-from capability_platform.agent.intent_analyzer import ClarificationRequiredError
+from capability_platform.agent.intent_analyzer import (
+    ClarificationRequiredError,
+    SensitiveInfoRequestedError,
+)
 from capability_platform.agent.plan_validator import PlanValidationError
 from capability_platform.models import ServiceType
 from capability_platform.runtime import (
@@ -22,6 +25,13 @@ from capability_platform.validation import GoalTooLongError
 
 def parse_inputs(values: list[str]) -> dict[str, str]:
     return dict(value.split("=", 1) for value in values)
+
+
+def build_goal_context(args) -> dict[str, str]:
+    context = parse_inputs(args.context)
+    if getattr(args, "target_url", None):
+        context["target_url"] = args.target_url
+    return context
 
 
 async def run(args) -> None:
@@ -54,13 +64,16 @@ async def run(args) -> None:
     elif args.command == "plan":
         try:
             intent, plan, resolutions = await agent_orchestrator().plan_only(
-                args.goal, parse_inputs(args.context)
+                args.goal, build_goal_context(args)
             )
         except GoalTooLongError as exc:
             print(json.dumps({"error": "goal_too_long", "message": str(exc)}, indent=2))
             sys.exit(1)
         except ClarificationRequiredError as exc:
             print(json.dumps({"error": "clarification_required", "question": exc.question}, indent=2))
+            sys.exit(1)
+        except SensitiveInfoRequestedError as exc:
+            print(json.dumps({"error": "sensitive_info_requested", "message": str(exc)}, indent=2))
             sys.exit(1)
         except PlanValidationError as exc:
             print(json.dumps({"error": "plan_validation_failed", "message": str(exc)}, indent=2))
@@ -77,12 +90,15 @@ async def run(args) -> None:
         )
     elif args.command == "run":
         try:
-            result = await agent_orchestrator().execute_goal(args.goal, parse_inputs(args.context))
+            result = await agent_orchestrator().execute_goal(args.goal, build_goal_context(args))
         except GoalTooLongError as exc:
             print(json.dumps({"error": "goal_too_long", "message": str(exc)}, indent=2))
             sys.exit(1)
         except ClarificationRequiredError as exc:
             print(json.dumps({"error": "clarification_required", "question": exc.question}, indent=2))
+            sys.exit(1)
+        except SensitiveInfoRequestedError as exc:
+            print(json.dumps({"error": "sensitive_info_requested", "message": str(exc)}, indent=2))
             sys.exit(1)
         except PlanValidationError as exc:
             print(json.dumps({"error": "plan_validation_failed", "message": str(exc)}, indent=2))
@@ -114,9 +130,11 @@ def main() -> None:
     replay.add_argument("--input", action="append", default=[])
     plan_cmd = commands.add_parser("plan")
     plan_cmd.add_argument("--goal", required=True)
+    plan_cmd.add_argument("--target-url", dest="target_url", default=None)
     plan_cmd.add_argument("--context", action="append", default=[])
     run_cmd = commands.add_parser("run")
     run_cmd.add_argument("--goal", required=True)
+    run_cmd.add_argument("--target-url", dest="target_url", default=None)
     run_cmd.add_argument("--context", action="append", default=[])
     commands.add_parser("list")
     approve = commands.add_parser("approve")

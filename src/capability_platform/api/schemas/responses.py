@@ -83,6 +83,17 @@ class DiscoverV1Response(BaseModel):
 class ApproveV1Response(BaseModel):
     capability_id: str = Field(description="Qualified id (id.vN) of the artifact just approved.")
     lifecycle: str = Field(description="Lifecycle state after approval (always 'approved').")
+    credentials_saved_for_client: str | None = Field(
+        default=None,
+        description="client_id credentials were also saved for, if the approve request included "
+        "them. None means no credentials were saved as part of this approval.",
+    )
+
+
+class SaveCredentialsResponse(BaseModel):
+    capability_id: str
+    client_id: str
+    saved: bool = True
 
 
 class SystemSummary(BaseModel):

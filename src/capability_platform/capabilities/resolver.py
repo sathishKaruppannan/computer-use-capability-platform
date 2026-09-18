@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from capability_platform.access.tenant_credentials import CREDENTIAL_FIELD_NAMES
 from capability_platform.agent.models import (
     CapabilityCandidate,
     CapabilityResolution,
@@ -45,7 +46,17 @@ class CapabilityResolver:
 
         usable = [candidate for candidate in scored if self._is_usable(candidate)]
         if usable:
-            selected = max(usable, key=lambda candidate: candidate.final_score)
+            # Tie-break (or near-tie) toward fewer stored-credential dependencies: a capability
+            # that doesn't need a per-client login is preferable to one that does, all else
+            # equal, since it works immediately rather than needing an admin to have already
+            # saved credentials for the calling client. Primary sort is still final_score.
+            selected = max(
+                usable,
+                key=lambda candidate: (
+                    candidate.final_score,
+                    -self._credential_field_count(candidate.descriptor),
+                ),
+            )
             alternatives = [candidate for candidate in scored if candidate is not selected]
             return CapabilityResolution(
                 step_id=step.id,
@@ -90,7 +101,14 @@ class CapabilityResolver:
             for name, spec in descriptor.input_schema.items()
             if not isinstance(spec, dict) or spec.get("required", True)
         }
-        input_compatible = descriptor_required_inputs.issubset(step.required_inputs)
+        # Sensitive (credential-shaped) inputs are satisfiable via the per-client
+        # TenantCredentialStore at execution time, not something the plan step needs to declare
+        # in advance -- a step asking for "the savings balance" shouldn't need to know ahead of
+        # time that one candidate capability happens to sit behind a login. The executor is what
+        # actually resolves them (and fails cleanly, asking an admin to add credentials, if none
+        # are stored for the calling client).
+        credential_fields = self._credential_fields(descriptor)
+        input_compatible = descriptor_required_inputs.issubset(set(step.required_inputs) | credential_fields)
         output_compatible = all(name in descriptor.output_schema for name in step.produced_outputs)
         # Re-checked here even though CapabilityRegistry.search() already excludes
         # blocked/discovered candidates -- defense in depth for callers that hand the resolver a
@@ -149,6 +167,14 @@ class CapabilityResolver:
         if not tenant_tags:
             return True
         return f"tenant:{tenant_id}" in tenant_tags
+
+    @staticmethod
+    def _credential_fields(descriptor: CapabilityDescriptor) -> set[str]:
+        return set(descriptor.input_schema) & CREDENTIAL_FIELD_NAMES
+
+    @classmethod
+    def _credential_field_count(cls, descriptor: CapabilityDescriptor) -> int:
+        return len(cls._credential_fields(descriptor))
 
     @staticmethod
     def _is_usable(candidate: CapabilityCandidate) -> bool:

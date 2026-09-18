@@ -77,6 +77,19 @@ class TaskIntent(BaseModel):
         "the caller needs to answer before this goal can be classified (e.g. 'Which member, and "
         "what would you like to do for them?').",
     )
+    requests_sensitive_info: bool = Field(
+        default=False,
+        description="True when the goal asks to retrieve or display regulated/secret data -- a "
+        "full SSN, a password or auth token/API key, a session/cookie value, or a full unmasked "
+        "account number -- the same sensitive-data category observability/evidence.py's Redactor "
+        "already enforces for logging. When true, the orchestrator refuses the request instead "
+        "of planning/resolving it; every other field is a low-confidence placeholder, not acted on.",
+    )
+    sensitive_info_reason: str | None = Field(
+        default=None,
+        description="Set only when requests_sensitive_info is true -- a short explanation of what "
+        "was asked for and why it can't be provided.",
+    )
     raw_goal: str
     provider: str = Field(description="Provenance tag of the LLM provider that produced this, e.g. 'mock:v1'.")
 

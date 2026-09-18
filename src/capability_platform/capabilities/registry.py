@@ -74,7 +74,8 @@ def _descriptor_from_artifact(artifact: CapabilityArtifact) -> CapabilityDescrip
         description=artifact.description,
         source="computer_use",
         input_schema={
-            spec.name: {"type": spec.type, "required": spec.required} for spec in artifact.inputs
+            spec.name: {"type": spec.type, "required": spec.required, "sensitive": spec.sensitive}
+            for spec in artifact.inputs
         },
         output_schema={spec.name: {"type": spec.type} for spec in artifact.outputs},
         risk=_artifact_risk(artifact),

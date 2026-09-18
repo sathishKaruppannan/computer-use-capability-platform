@@ -17,6 +17,8 @@ from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
 from capability_platform.api import agent_routes as agent_routes_module
 from capability_platform.api import app as app_module
+from capability_platform.api.agent_routes import _build_context
+from capability_platform.api.schemas.requests import AgentExecuteRequest
 from capability_platform.capabilities.executor import CapabilityExecutor
 from capability_platform.capabilities.registry import build_registry
 from capability_platform.capabilities.resolver import CapabilityResolver
@@ -308,3 +310,73 @@ def test_plan_agent_rejects_goal_over_length_limit(monkeypatch, tmp_path):
         auth=("demo-client", "correct-pw"),
     )
     assert response.status_code == 422
+
+
+SENSITIVE_INFO_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "requests_sensitive_info": True,
+    "sensitive_info_reason": "Full SSNs are not provided through this system",
+}
+
+
+def test_execute_agent_returns_400_for_sensitive_info_request(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _install_fake_orchestrator(monkeypatch, intent_response=SENSITIVE_INFO_RESPONSE)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/execute",
+        json={"goal": "What is member 10002's full SSN?", "client_inquiry_id": "req-1"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+    assert "Not allowed to provide this information" in response.json()["detail"]
+    assert "Full SSNs are not provided through this system" in response.json()["detail"]
+
+
+def test_plan_agent_returns_400_for_sensitive_info_request(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _install_fake_orchestrator(monkeypatch, intent_response=SENSITIVE_INFO_RESPONSE)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/plan",
+        json={"goal": "What is member 10002's full SSN?"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+    assert "Not allowed to provide this information" in response.json()["detail"]
+
+
+def test_build_context_injects_target_url_and_overrides_client_id():
+    """The authenticated credential's client_id must always win, even if a caller tries to name
+    a different one in their own context dict -- see _build_context's own docstring."""
+    request = AgentExecuteRequest(
+        goal="irrelevant",
+        client_inquiry_id="req-1",
+        target_url="http://127.0.0.1:8001/secure",
+        context={"client_id": "someone-else", "memberId": "10002"},
+    )
+    credential = ClientCredential(
+        client_id="demo-client", password_hash="x", password_salt="y", authorized_service_types=[]
+    )
+    context = _build_context(request, credential)
+    assert context["target_url"] == "http://127.0.0.1:8001/secure"
+    assert context["client_id"] == "demo-client"
+    assert context["memberId"] == "10002"
+
+
+def test_build_context_omits_target_url_when_not_supplied():
+    request = AgentExecuteRequest(goal="irrelevant", client_inquiry_id="req-1")
+    credential = ClientCredential(
+        client_id="demo-client", password_hash="x", password_salt="y", authorized_service_types=[]
+    )
+    context = _build_context(request, credential)
+    assert "target_url" not in context
+    assert context["client_id"] == "demo-client"

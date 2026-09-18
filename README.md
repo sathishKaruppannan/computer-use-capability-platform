@@ -465,6 +465,59 @@ same way `/v1/capabilities/{id}/execute` rejects one (`error.code == "SERVICE_TY
 in the per-step `execution` entry, not a blanket `403` — since a multi-step plan could in
 principle resolve different steps to different service types). See `tests/test_agent_api.py`.
 
+`goal` can be paired with an explicit `target_url` (only consulted if resolution falls back to
+discovery for a step) and an optional caller-generated `run_id` (mirrors
+`DiscoverV1Request.discovery_run_id` — lets a UI poll `GET /runs/{run_id}/events` for live
+progress while a slow, discovery-triggering call is still in flight). If nothing existing matches
+and discovery produces a fresh draft, the response is `"status": "paused"` with
+`synthesized_text` reading *"A new capability draft ('...') has been created for this goal.
+Please ask your admin to review and approve it, then try again."* — see Phase 14 in `TASKS.md`
+for the live-captured example.
+
+**Per-client credentials for login-gated capabilities.** A login-gated capability's `username`/
+`password` are satisfiable via a per-client credential store (`access/tenant_credentials.py`,
+keyed by `(capability_id, client_id)`) rather than something a caller supplies per request — the
+executor pulls them automatically at execution time. An admin attaches credentials for one client
+either inline with approval:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/capabilities/<id>/approve -u admin-client:secret \
+  -H 'content-type: application/json' -d '{
+    "client_id": "demo-client", "username": "demo", "password": "letmein-2024"
+  }'
+```
+
+or separately, any time after approval — the point that actually proves multi-tenant reuse (the
+*same* login-gated artifact, a *second* client, its *own* stored credentials, no re-approval):
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/capabilities/<id>/credentials -u admin-client:secret \
+  -H 'content-type: application/json' -d '{
+    "client_id": "second-client", "username": "second", "password": "second-pw"
+  }'
+```
+
+If a resolved capability needs credentials nothing has been stored for a given `client_id` yet,
+execution fails cleanly (`error.code == "CREDENTIALS_REQUIRED"`, `category == "auth"`) naming the
+exact endpoint above to call — never a partial/garbled login attempt. Live-verified end to end
+(real Playwright login using only stored credentials, zero credentials in the request) — see
+Phase 14 in `TASKS.md`.
+
+**Sensitive-info guardrail.** A goal asking to retrieve/display a full SSN, a password or other
+login credential, an auth token/API key, a session/cookie value, or a full unmasked account/card
+number — the same category `observability/evidence.py`'s `Redactor` already treats as secret — is
+refused outright, before any planning or resolution: `400` with
+`"Not allowed to provide this information: <reason>"`. A goal that asks for something legitimate
+*alongside* a sensitive request is refused in full, not partially answered. See
+`SensitiveInfoRequestedError` (`agent/intent_analyzer.py`) and `tests/test_intent_analyzer.py` /
+`test_orchestrator.py` / `test_agent_api.py`.
+
+**An unresolvable goal never crashes.** If no existing capability matches and live discovery
+itself can't produce a working one for the goal (nothing on the target corresponds to what was
+asked), the response is still a clean `200` with `"status": "failure"` and
+`error.code == "DISCOVERY_FAILED"` — never an unhandled exception. Found and fixed during live
+verification for this exact phase; see Phase 14 in `TASKS.md` for the before/after.
+
 ### MCP
 
 ```bash
@@ -550,13 +603,27 @@ live against a capability that isn't otherwise pause/risk-enabled.
 ## Admin dashboard
 
 `GET /admin` (open `http://127.0.0.1:8000/admin` once `make platform` is running) is a single
-local page that consolidates every flow above into one click-through demo: client initiate
-(`/v1/discover`), pending artifacts → review → approve, execute (success / business-outcome /
-failure), both intervention flows with the same-session proof rendered inline, an observability
-event-trace viewer, and client-side statistics — each section carries an "Implements:" note
-citing the exact file/function it demonstrates. Plain HTML/CSS/vanilla JS, no build step, no
-framework, same-origin `fetch()` calls only — deliberately not a Claude Artifact, since an
-Artifact runs in a sandboxed browser on claude.ai and can't reach this machine's `127.0.0.1`.
+local page that consolidates every flow above into one click-through demo: a chatbot-style goal
+entry point, client initiate (`/v1/discover`), pending artifacts → review → approve, execute
+(success / business-outcome / failure), both intervention flows with the same-session proof
+rendered inline, an observability event-trace viewer, and client-side statistics — each section
+carries an "Implements:" note citing the exact file/function it demonstrates. Plain HTML/CSS/
+vanilla JS, no build step, no framework, same-origin `fetch()` calls only — deliberately not a
+Claude Artifact, since an Artifact runs in a sandboxed browser on claude.ai and can't reach this
+machine's `127.0.0.1`.
+
+**§0 "Try a goal"** is the chatbot entry point: type a goal, hit send, and it calls the real
+`POST /agent/execute` and renders the synthesized response as a chat bubble — the same end-to-end
+pipeline the rest of the page's sections exercise piece by piece. Below it, a collapsible
+**examples panel** lists one goal per scenario (existing-capability match, goal+URL discovery
+fallback, login-gated capability, ambiguous-goal clarification, sensitive-info refusal,
+unknown/unresolvable goal) with a note on what each demonstrates, click to fill the goal box — and
+a collapsible **trace panel** (auto-opens after a send) relabels that run's real
+`GET /runs/{run_id}/events` trail into plain-language pipeline stages (LLM called → intent
+identified, orchestration → plan created, capability candidates retrieved/selected, discovery
+started/completed, response synthesized, ...) for narrating the architecture to a non-engineer
+audience — nothing here is fabricated client-side, it's the same redacted evidence §7
+Observability already reads, just relabeled.
 
 Three small endpoints exist purely to support it (local-demo-only, unauthenticated, not part of
 the versioned `/v1` contract): `GET /runs/{run_id}/events` (reads back a run's redacted evidence

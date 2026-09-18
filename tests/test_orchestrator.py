@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from capability_platform.agent.intent_analyzer import ClarificationRequiredError, IntentAnalyzer
+from capability_platform.agent.intent_analyzer import (
+    ClarificationRequiredError,
+    IntentAnalyzer,
+    SensitiveInfoRequestedError,
+)
 from capability_platform.agent.orchestrator import AgentOrchestrator
 from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
@@ -137,6 +141,31 @@ async def test_unresolved_step_falls_back_to_real_discovery_agent(tmp_path):
     assert calls, "discovery agent should have been invoked for an unresolvable step"
     assert result.status == RunStatus.PAUSED
     assert result.execution[0].descriptor_id == "open-account-preferences.v1"
+
+
+async def test_discovery_failure_returns_a_clean_failure_result_not_an_unhandled_exception(tmp_path):
+    """Regression test for a real bug found during live verification: a goal with no sensible
+    business meaning on the target (e.g. 'Reticulate the splines for member 10001') drove
+    discovery down a path where Claude tried to interact with an element that doesn't exist,
+    raising a LookupError that propagated all the way to an unhandled 500. A goal this system
+    genuinely can't fulfill must still be a clean, typed FAILURE -- never a crash."""
+
+    class _FailingDiscoveryAgent:
+        async def discover(self, goal, target_url, member_id="10001", **kwargs):
+            raise LookupError("role:button matched 0")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, lambda: _FailingDiscoveryAgent(), intent_response=OPEN_PREFERENCES_RESPONSE
+    )
+    result = await orchestrator.execute_goal(
+        "Reticulate the splines for member 10001", context={"target_url": "http://127.0.0.1:8001"}
+    )
+
+    assert result.status == RunStatus.FAILURE
+    assert result.execution[0].error.code == "DISCOVERY_FAILED"
+    assert result.execution[0].error.category.value == "internal"
+    assert "LookupError" in result.execution[0].error.message
+    assert "role:button matched 0" not in result.execution[0].error.message
 
 
 def _minimal_artifact(artifact_id: str, lifecycle: str) -> CapabilityArtifact:
@@ -338,6 +367,40 @@ async def test_execute_goal_raises_clarification_required_and_never_executes(tmp
     )
     with pytest.raises(ClarificationRequiredError):
         await orchestrator.execute_goal("Handle this member.")
+
+
+SENSITIVE_INFO_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "requests_sensitive_info": True,
+    "sensitive_info_reason": "Full SSNs are not provided through this system",
+}
+
+
+async def test_execute_goal_refuses_a_sensitive_info_request_before_planning(tmp_path):
+    def _discovery_agent_factory():
+        raise AssertionError("must never reach discovery for a refused sensitive-info request")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, _discovery_agent_factory, intent_response=SENSITIVE_INFO_RESPONSE
+    )
+    with pytest.raises(SensitiveInfoRequestedError) as exc_info:
+        await orchestrator.execute_goal("What is member 10002's full Social Security Number?")
+    assert exc_info.value.reason == "Full SSNs are not provided through this system"
+
+
+async def test_plan_only_refuses_a_sensitive_info_request(tmp_path):
+    def _discovery_agent_factory():
+        raise AssertionError("must never reach discovery for a refused sensitive-info request")
+
+    orchestrator = _build_orchestrator(
+        tmp_path, _discovery_agent_factory, intent_response=SENSITIVE_INFO_RESPONSE
+    )
+    with pytest.raises(SensitiveInfoRequestedError):
+        await orchestrator.plan_only("What is member 10002's full Social Security Number?")
 
 
 async def test_plan_only_does_not_execute_anything(tmp_path):

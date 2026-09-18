@@ -43,6 +43,17 @@ piece of information you can name (that's what missing_required_inputs is for) o
 vague but still has a discernible verb and subject (e.g. "check on the member" still means
 intent=retrieve_account_status or similar -- classify it, don't ask for clarification).
 
+requests_sensitive_info / sensitive_info_reason -- ONLY when the goal asks to RETRIEVE or DISPLAY
+one of: a full Social Security Number, a password or other login credential, an auth token or API
+key, a session/cookie value, or a full unmasked account/card number. Set
+requests_sensitive_info=true and sensitive_info_reason to a short explanation (e.g. "Full SSNs
+are not provided through this system"). Fill every other required field with the same placeholder
+values as the ambiguous-goal case above. Do NOT set this for ordinary account data a servicing
+agent legitimately needs (a savings balance, a member's name, an account status) -- only for the
+specific regulated/secret categories named above. A goal that ONLY asks for one of those
+categories should be refused entirely; a goal that asks for something else ALONGSIDE one of them
+(e.g. "get the balance and the full SSN") should also be refused entirely, not partially answered.
+
 sub_goals -- ONLY when the goal describes multiple genuinely distinct actions in sequence (e.g.
 "find member X, do A, then do B"), not for a single action described in several clauses. When
 present, list each action in execution order, each with:
@@ -116,6 +127,18 @@ Goal: "Handle this member."
   "confidence": 0.1,
   "requires_clarification": true,
   "clarification_question": "Which member, and what would you like to do for them?"
+}
+
+Worked example 4 -- a request for regulated/secret data, follow this shape for an equivalent goal:
+Goal: "What is member 10002's full Social Security Number?"
+{
+  "intent": "unknown",
+  "domain": "unknown",
+  "operation": "read",
+  "risk": "read_only",
+  "confidence": 0.1,
+  "requests_sensitive_info": true,
+  "sensitive_info_reason": "Full SSNs are not provided through this system"
 }"""
 
 ACTION_TOOL = {
@@ -192,6 +215,19 @@ ACTION_TOOL = {
                 "type": "string",
                 "description": "Required when requires_clarification is true: a short, specific "
                 "question the caller needs to answer before this goal can be classified.",
+            },
+            "requests_sensitive_info": {
+                "type": "boolean",
+                "description": (
+                    "True ONLY when the goal asks to retrieve/display a full SSN, a password or "
+                    "other login credential, an auth token/API key, a session/cookie value, or a "
+                    "full unmasked account/card number."
+                ),
+            },
+            "sensitive_info_reason": {
+                "type": "string",
+                "description": "Required when requests_sensitive_info is true: a short "
+                "explanation of what was asked for and why it can't be provided.",
             },
         },
         "required": ["intent", "domain", "operation", "risk", "confidence"],

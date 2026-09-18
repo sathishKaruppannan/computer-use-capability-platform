@@ -75,6 +75,31 @@ ADMIN_HTML = """<!doctype html>
   table.ref td, table.ref th { border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; vertical-align: top; }
   nav.toc { font-size: 13px; }
   nav.toc a { margin-right: 10px; }
+  .chat-log { background: #f7f7f2; border: 1px solid #e0e0d8; border-radius: 6px; padding: 12px; margin: 10px 0;
+    max-height: 420px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  .bubble { max-width: 80%; padding: 8px 12px; border-radius: 10px; font-size: 13.5px; white-space: pre-wrap; }
+  .bubble.user { align-self: flex-end; background: #17324d; color: white; border-bottom-right-radius: 2px; }
+  .bubble.assistant { align-self: flex-start; background: white; border: 1px solid #ddd; border-bottom-left-radius: 2px; }
+  .bubble.assistant.refused { border-color: #e0b8b8; background: #fbeaea; }
+  .bubble.assistant.error { border-color: #e0b8b8; background: #fbeaea; }
+  .bubble .stage-tag { display: block; font-size: 11px; color: #888; margin-top: 4px; }
+  .chat-row { display: flex; gap: 8px; }
+  .chat-row textarea { flex: 1; padding: 8px; font: inherit; resize: vertical; min-height: 42px; box-sizing: border-box; }
+  .examples { display: none; }
+  .examples.open { display: block; }
+  .ex-item { border: 1px solid #ddd; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; background: #fbfbf7; }
+  .ex-item:hover { background: #eef3ee; border-color: #b9d0b9; }
+  .ex-item .ex-goal { font-weight: 600; font-size: 13px; }
+  .ex-item .ex-note { font-size: 12px; color: #666; margin-top: 2px; }
+  .toggle-link { font-size: 13px; color: #17324d; cursor: pointer; text-decoration: underline; user-select: none; }
+  .trace { display: none; }
+  .trace.open { display: block; }
+  .trace-item { border-left: 3px solid #ccc; padding: 4px 0 4px 10px; margin-bottom: 4px; font-size: 12.5px; }
+  .trace-item.ok { border-left-color: #2f8f4e; }
+  .trace-item.fail { border-left-color: #a33; }
+  .trace-item.info { border-left-color: #2a5da0; }
+  .trace-item .t-label { font-weight: 600; }
+  .trace-item .t-detail { color: #555; white-space: pre-wrap; word-break: break-word; }
 </style>
 </head>
 <body>
@@ -91,6 +116,7 @@ ADMIN_HTML = """<!doctype html>
       live demo would narrate them. Condensed from <code>docs/ARCHITECTURE_WALKTHROUGH.md</code>'s "Suggested demo
       script."</p>
     <nav class="toc">
+      <a href="#chatbot">0. Try a goal</a>
       <a href="#client-initiate">1. Client initiate</a>
       <a href="#test-app">Test app</a>
       <a href="#pending-capabilities">2. Pending artifacts</a>
@@ -102,6 +128,38 @@ ADMIN_HTML = """<!doctype html>
       <a href="#statistics">8. Statistics</a>
       <a href="#reference">9. Full reference</a>
     </nav>
+  </section>
+
+  <section id="chatbot">
+    <h2>0. Try a goal <span class="badge">POST /agent/execute</span></h2>
+    <div class="impl"><b>Implements:</b> <code>AgentOrchestrator.execute_goal()</code>
+      (<code>agent/orchestrator.py</code>) end to end — <code>IntentAnalyzer</code> (LLM) →
+      <code>Planner</code> → <code>PlanValidator</code> → <code>CapabilityResolver</code> → execution
+      (existing typed artifact replay, or a discovery fallback) → deterministic aggregation →
+      <code>GroundedSynthesizer.synthesize_agent_result()</code>. This is the single entry point the rest
+      of this page's §1–§8 exercise piece by piece — type a goal below the way an end user would, with no
+      knowledge of capability ids, and it pulls whatever it needs (intent, plan, matching capability,
+      stored credentials, service type) itself.</div>
+    <p class="meta">Uses the same client_id/password above. Optional target URL only matters if this goal
+      needs a brand-new capability discovered (no existing match) — see the examples below.</p>
+    <div id="chat-log" class="chat-log"></div>
+    <div class="chat-row">
+      <textarea id="chat-goal" placeholder="e.g. Find member 10001 and return savings balance"></textarea>
+      <button class="primary" id="chat-send-btn" onclick="sendChatGoal()">Send</button>
+    </div>
+    <div class="field" style="margin-top:8px">
+      <label><input type="checkbox" id="chat-show-advanced" onchange="toggleChatAdvanced()"> Advanced (target URL / context)</label>
+    </div>
+    <div class="row" id="chat-advanced" style="display:none">
+      <div class="field"><label>target_url (optional)</label><input id="chat-target-url" placeholder="http://127.0.0.1:8001/secure"></div>
+    </div>
+    <p id="chat-status" class="meta"></p>
+
+    <p><span class="toggle-link" onclick="toggleExamples()" id="examples-toggle">▸ Show example goals (one per scenario, for demo reference)</span></p>
+    <div class="examples" id="examples-box"></div>
+
+    <p><span class="toggle-link" onclick="toggleTrace()" id="trace-toggle">▸ Show what's happening behind the scenes (last run's trace)</span></p>
+    <div class="trace" id="trace-box"><p class="empty">Send a goal above to see its step-by-step trace here.</p></div>
   </section>
 
   <section id="credentials">
@@ -324,6 +382,11 @@ ADMIN_HTML = """<!doctype html>
         <tr><td>Same session continue</td><td>§6</td><td><code>replay.py</code> <code>page_identity</code></td><td><code>id(surface.page)</code>, in-process handoff</td></tr>
         <tr><td>View observability events</td><td>§7</td><td><code>app.py:run_events</code>, <code>observability/evidence.py</code></td><td>redacted JSONL trace</td></tr>
         <tr><td>Statistics / dashboard</td><td>§8</td><td>client-side JS only</td><td>no backend change</td></tr>
+        <tr><td>Natural-language goal entry (chatbot)</td><td>§0</td><td><code>api/agent_routes.py:execute_agent</code>, <code>agent/orchestrator.py:execute_goal</code></td><td>full Intent → Plan → Resolve → Execute → Synthesize pipeline</td></tr>
+        <tr><td>Per-client credential storage / reuse across clients</td><td>§0 examples + §2 approve dialog</td><td><code>access/tenant_credentials.py</code>, <code>v1_routes.py:approve_v1</code>/<code>save_credentials_v1</code></td><td>keyed by (capability_id, client_id); executor auto-pulls at run time</td></tr>
+        <tr><td>Ambiguous-goal clarification guardrail</td><td>§0 examples</td><td><code>TaskIntent.requires_clarification</code>, <code>orchestrator.py:_intent_plan_resolve</code></td><td>refused before planning, never guessed at</td></tr>
+        <tr><td>Sensitive-info guardrail</td><td>§0 examples</td><td><code>TaskIntent.requests_sensitive_info</code>, <code>SensitiveInfoRequestedError</code></td><td>same redaction category as <code>observability/evidence.py</code>'s <code>Redactor</code></td></tr>
+        <tr><td>Step-by-step "what's happening" trace</td><td>§0 trace panel</td><td><code>app.py:run_events</code> + client-side <code>friendlyEvent()</code></td><td>relabels the real evidence event stream, no new backend data</td></tr>
       </table>
     </details>
   </section>
@@ -350,6 +413,214 @@ function cssSafe(s) { return s.replace(/[^a-zA-Z0-9]/g, '_'); }
 function newInquiryId() {
   return (crypto.randomUUID ? crypto.randomUUID() : 'inq-' + Date.now() + '-' + Math.random().toString(16).slice(2));
 }
+
+// ---------- §0 Chatbot ----------
+
+const EXAMPLE_GOALS = [
+  { category: 'Existing capability match — reused instantly, zero LLM planning surprises',
+    goal: 'Find member 10001 and return savings balance',
+    note: 'Matches the approved lookup-member-savings-balance.v1 capability directly. Try member 10002/10003/10004/10005/99999 too — see §4\\'s legend for what each demo member id does.' },
+  { category: 'Goal + target URL — brand-new capability, discovered live',
+    goal: 'Look up the account status for member 10001',
+    targetUrl: 'http://127.0.0.1:8001',
+    note: 'No existing capability produces "account status" — this falls back to live Claude discovery against the given URL and returns "a new capability draft has been created... ask your admin to review and approve it." Takes up to ~60s and opens a visible browser.' },
+  { category: 'Login-gated capability — credentials pulled automatically at execution',
+    goal: 'Find member 10002 and return savings balance from the secure member portal',
+    note: 'Only resolves to a login-gated capability if one has been discovered + approved (§1, check "Requires login?") and this client has credentials stored for it (§2 approve dialog, or POST /v1/capabilities/{id}/credentials). Otherwise you\\'ll see the "credentials needed, ask your admin" failure below — also a valid demo point.' },
+  { category: 'Ambiguous goal — clarification guardrail',
+    goal: 'Handle this member.',
+    note: 'No discernible entity/operation/action — the Intent Analyzer itself flags requires_clarification instead of guessing, and the orchestrator refuses to plan for it.' },
+  { category: 'Sensitive-info request — refused outright, never partially answered',
+    goal: "What is member 10002's full Social Security Number?",
+    note: 'Regulated/secret data category (full SSN, password/API key, session/cookie value, unmasked account number) — refused before any plan/resolution attempt, same redaction category as the evidence Redactor.' },
+  { category: 'Unknown / unresolvable goal — still a clean, typed response',
+    goal: 'Reticulate the splines for member 10001',
+    note: 'Not ambiguous (has a verb/subject), but nothing in the capability catalog remotely matches it — falls back to discovery, which will fail to find anything on the demo app and returns a proper failure response instead of a crash or a hallucinated answer.' },
+];
+
+function renderExamples() {
+  const box = document.getElementById('examples-box');
+  box.innerHTML = EXAMPLE_GOALS.map((ex, i) => `
+    <div class="ex-item" onclick="useExample(${i})">
+      <div class="ex-goal">${esc(ex.goal)}</div>
+      <div class="ex-note"><b>${esc(ex.category)}.</b> ${esc(ex.note)}${ex.targetUrl ? ' target_url: <code>' + esc(ex.targetUrl) + '</code>' : ''}</div>
+    </div>`).join('');
+}
+
+function useExample(i) {
+  const ex = EXAMPLE_GOALS[i];
+  document.getElementById('chat-goal').value = ex.goal;
+  if (ex.targetUrl) {
+    document.getElementById('chat-show-advanced').checked = true;
+    toggleChatAdvanced();
+    document.getElementById('chat-target-url').value = ex.targetUrl;
+  }
+  document.getElementById('chatbot').scrollIntoView({ behavior: 'smooth' });
+}
+
+function toggleExamples() {
+  const box = document.getElementById('examples-box');
+  const link = document.getElementById('examples-toggle');
+  const open = box.classList.toggle('open');
+  link.textContent = (open ? '▾ Hide' : '▸ Show') + ' example goals (one per scenario, for demo reference)';
+}
+
+function toggleTrace() {
+  const box = document.getElementById('trace-box');
+  const link = document.getElementById('trace-toggle');
+  const open = box.classList.toggle('open');
+  link.textContent = (open ? '▾ Hide' : '▸ Show') + " what's happening behind the scenes (last run's trace)";
+}
+
+function toggleChatAdvanced() {
+  document.getElementById('chat-advanced').style.display =
+    document.getElementById('chat-show-advanced').checked ? 'flex' : 'none';
+}
+
+function addChatBubble(role, text, extraClass) {
+  const log = document.getElementById('chat-log');
+  const div = document.createElement('div');
+  div.className = 'bubble ' + role + (extraClass ? ' ' + extraClass : '');
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+async function sendChatGoal() {
+  const goalEl = document.getElementById('chat-goal');
+  const goal = goalEl.value.trim();
+  if (!goal) return;
+  const status = document.getElementById('chat-status');
+  const sendBtn = document.getElementById('chat-send-btn');
+  const targetUrl = document.getElementById('chat-target-url').value.trim();
+  const runId = newInquiryId();
+
+  addChatBubble('user', goal);
+  goalEl.value = '';
+  sendBtn.disabled = true;
+  status.textContent = 'Working… intent analysis, planning, capability resolution' +
+    (targetUrl ? ', possibly live discovery against the target URL' : '') + '. This can take a few seconds, longer if a new capability needs discovering.';
+
+  try {
+    const body = { goal, client_inquiry_id: newInquiryId(), run_id: runId, context: {} };
+    if (targetUrl) body.target_url = targetUrl;
+    const res = await fetch('/agent/execute', {
+      method: 'POST',
+      headers: { 'Authorization': authHeader(), 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      addChatBubble('assistant', data.detail || `Request failed (HTTP ${res.status})`, 'refused');
+      status.textContent = `HTTP ${res.status} — see the bubble above. The trace panel below still shows what ran before the refusal.`;
+    } else {
+      const summary = data.result || {};
+      addChatBubble('assistant', summary.synthesized_text || '(no response text)');
+      status.textContent = `status=${summary.status} · run_id=${data.run_id} — see the trace panel below for the full step-by-step pipeline.`;
+      document.getElementById('ob-run-id').value = data.run_id;
+      state.lastRunId = data.run_id;
+      refreshAll();
+    }
+  } catch (e) {
+    addChatBubble('assistant', 'Error: ' + e, 'error');
+    status.textContent = 'Request failed before a response was received.';
+  } finally {
+    sendBtn.disabled = false;
+  }
+  await loadTrace(runId);
+  const traceBox = document.getElementById('trace-box');
+  if (!traceBox.classList.contains('open')) toggleTrace();
+}
+
+function friendlyEvent(e) {
+  switch (e.event) {
+    case 'intent.analyzed': {
+      const intent = e.intent || {};
+      return { label: 'LLM called → intent identified', kind: 'ok',
+        detail: `intent=${intent.intent} · domain=${intent.domain} · operation=${intent.operation} · risk=${intent.risk} · confidence=${intent.confidence} · provider=${e.provider}` };
+    }
+    case 'intent.clarification_required':
+      return { label: 'Guardrail: ambiguous goal → clarification required', kind: 'fail', detail: e.question };
+    case 'guardrail.sensitive_info_refused':
+      return { label: 'Guardrail: sensitive-info request refused', kind: 'fail', detail: e.reason };
+    case 'plan.created':
+      return { label: 'Orchestration → plan created', kind: 'ok', detail: `${e.step_count} step(s): ${(e.steps || []).join(', ')}` };
+    case 'plan.validated':
+      return { label: 'Plan validated against policy', kind: 'ok',
+        detail: (e.steps_requiring_approval || []).length ? `Requires human approval: ${e.steps_requiring_approval.join(', ')}` : 'No steps require approval' };
+    case 'capability.candidates_retrieved':
+      return { label: `Capability candidates retrieved (${e.step_id})`, kind: 'info',
+        detail: `${e.candidate_count} candidate(s): ${(e.candidate_ids || []).join(', ') || '(none found)'}` };
+    case 'capability.selected':
+      return { label: `Capability selected (${e.step_id})`, kind: 'ok', detail: `${e.descriptor_id} · score=${e.final_score}` };
+    case 'capability.rejected':
+      return { label: `No existing capability matched (${e.step_id}) → will fall back to discovery`, kind: 'info', detail: e.reason };
+    case 'discovery.fallback_started':
+      return { label: 'Discover call started — no existing artifact matched', kind: 'info', detail: e.discovery_goal };
+    case 'discovery.observed':
+      return { label: `Discovery — page observed (step ${e.step})`, kind: 'info', detail: '' };
+    case 'discovery.decided': {
+      const d = e.decision || {};
+      return { label: `Discovery — Claude decided the next action (step ${e.step})`, kind: 'info',
+        detail: `${d.action} — ${d.strategy ? d.strategy + '=' + (d.value || d.name || '') + ' — ' : ''}${d.reason || ''}` };
+    }
+    case 'discovery.acted':
+      return { label: `Discovery — action performed (${e.step_id})`, kind: 'info', detail: e.action };
+    case 'discovery.completed':
+      return { label: 'Discovery completed → draft artifact created (needs admin approval)', kind: 'ok', detail: e.artifact };
+    case 'capability.executed':
+      return { label: `Capability executed (${e.step_id})`, kind: /FAILURE/.test(e.status) ? 'fail' : 'ok', detail: `${e.descriptor_id} → ${e.status}` };
+    case 'replay.started':
+      return { label: 'Replay started — typed artifact, zero LLM calls', kind: 'info', detail: e.capability };
+    case 'step.started':
+      return { label: `Replay step started (${e.step_id})`, kind: 'info', detail: e.action };
+    case 'step.completed':
+      return { label: `Replay step completed (${e.step_id})`, kind: 'ok', detail: '' };
+    case 'business_outcome':
+      return { label: `Business outcome reached (${e.step_id})`, kind: 'info', detail: e.code };
+    case 'validation.failed':
+      return { label: 'Postcondition/checkpoint validation failed', kind: 'fail', detail: JSON.stringify(e.error || {}) };
+    case 'intervention.created':
+      return { label: 'Paused for human intervention', kind: 'info', detail: e.reason || '' };
+    case 'control.transferred':
+      return { label: `Control transferred to ${e.owner}`, kind: 'info', detail: '' };
+    case 'resume.validated':
+      return { label: `Resume validated (${e.step_id})`, kind: 'ok', detail: '' };
+    case 'replay.completed':
+      return { label: 'Replay completed', kind: 'ok', detail: JSON.stringify(e.outputs || {}) };
+    case 'result.aggregated':
+      return { label: 'Outputs aggregated — deterministic, exact-key lookups only, no LLM', kind: 'ok', detail: JSON.stringify(e.outputs || {}) };
+    case 'result.synthesized':
+      return { label: 'Response synthesized — grounded in canonical outputs, no LLM in this step', kind: 'ok', detail: e.text };
+    default:
+      return { label: e.event, kind: 'info', detail: '' };
+  }
+}
+
+async function loadTrace(runId) {
+  const box = document.getElementById('trace-box');
+  try {
+    const res = await fetch(`/runs/${encodeURIComponent(runId)}/events`);
+    if (!res.ok) { box.innerHTML = '<p class="empty">No evidence found for this run.</p>'; return; }
+    const data = await res.json();
+    const events = data.events || [];
+    if (events.length === 0) { box.innerHTML = '<p class="empty">No events recorded for this run.</p>'; return; }
+    box.innerHTML = `<p class="meta">Real evidence events for run_id=${esc(runId)} (GET /runs/{run_id}/events), relabeled for readability — nothing here is fabricated client-side.</p>` +
+      events.map(e => {
+        const f = friendlyEvent(e);
+        return `<div class="trace-item ${f.kind}"><span class="t-label">${esc(f.label)}</span>` +
+          (f.detail ? `<div class="t-detail">${esc(f.detail)}</div>` : '') + `</div>`;
+      }).join('');
+  } catch (e) {
+    box.innerHTML = `<p class="err">${esc(e)}</p>`;
+  }
+}
+
+document.getElementById('chat-goal').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatGoal(); }
+});
+renderExamples();
 
 // ---------- §1 Client initiate ----------
 

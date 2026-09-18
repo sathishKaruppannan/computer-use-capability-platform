@@ -135,6 +135,26 @@ def test_run_events_returns_parsed_jsonl(monkeypatch, tmp_path):
     assert body["events"] == [{"timestamp": "2026-01-01T00:00:00Z", "event": "replay.started"}]
 
 
+def test_admin_console_renders_and_includes_the_chatbot_section(monkeypatch, tmp_path):
+    """Not a JS test (still verified by hand in a browser per this file's docstring) -- just a
+    smoke check that GET /admin renders and that the goal-entry chatbot, example-goals panel, and
+    behind-the-scenes trace panel added to api/admin.py are actually present in the served HTML,
+    so a future edit that accidentally drops one of them fails fast instead of only being caught
+    by eye during a demo."""
+    monkeypatch.setattr(global_settings, "evidence_dir", tmp_path / "evidence")
+    client = TestClient(app_module.app)
+
+    response = client.get("/admin")
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="chatbot"' in body
+    assert 'id="chat-goal"' in body
+    assert "sendChatGoal" in body
+    assert "EXAMPLE_GOALS" in body
+    assert 'id="trace-box"' in body
+    assert "friendlyEvent" in body
+
+
 @pytest.mark.e2e
 def test_run_events_from_a_real_execute(monkeypatch, tmp_path):
     """The live version of the two unit tests above: a real execute produces a real run_id, and

@@ -1,12 +1,18 @@
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
-from capability_platform.access.models import ClientCredential, InquiryRecord
+from capability_platform.access.models import ClientCredential, InquiryRecord, TenantCredential
 from capability_platform.access.system_registry import SystemNotRegisteredError
+from capability_platform.access.tenant_credentials import CREDENTIAL_FIELD_NAMES
 from capability_platform.agent.models import ResolutionType
 from capability_platform.api.auth import authenticate_client, require_service_type
-from capability_platform.api.schemas.requests import DiscoverV1Request, ExecuteV1Request
+from capability_platform.api.schemas.requests import (
+    ApproveV1Request,
+    DiscoverV1Request,
+    ExecuteV1Request,
+    SaveCredentialsRequest,
+)
 from capability_platform.api.schemas.responses import (
     ApproveV1Response,
     CapabilityReviewResponse,
@@ -14,6 +20,7 @@ from capability_platform.api.schemas.responses import (
     PendingCapabilityListResponse,
     PendingCapabilitySummary,
     RequesterInfo,
+    SaveCredentialsResponse,
     SystemListResponse,
     SystemSummary,
 )
@@ -26,6 +33,7 @@ from capability_platform.runtime import (
     replay_engine,
     store,
     system_registry,
+    tenant_credential_store,
 )
 
 router = APIRouter(prefix="/v1", tags=["v1"])
@@ -328,6 +336,7 @@ def review_capability_v1(
 @router.post("/capabilities/{capability_id}/approve", response_model=ApproveV1Response)
 def approve_v1(
     capability_id: str,
+    request: ApproveV1Request | None = Body(default=None),  # noqa: B008 - FastAPI's own idiom
     credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
 ) -> ApproveV1Response:
     if not credential.is_admin:
@@ -338,4 +347,57 @@ def approve_v1(
         raise HTTPException(404, "Capability not found") from exc
     artifact.lifecycle = "approved"
     store().save(artifact)
-    return ApproveV1Response(capability_id=artifact.qualified_id, lifecycle=artifact.lifecycle)
+
+    credentials_saved_for_client = None
+    if request and request.client_id and request.username and request.password:
+        tenant_credential_store().save(
+            TenantCredential(
+                capability_id=artifact.qualified_id,
+                client_id=request.client_id,
+                username=request.username,
+                password=request.password,
+            )
+        )
+        credentials_saved_for_client = request.client_id
+
+    return ApproveV1Response(
+        capability_id=artifact.qualified_id,
+        lifecycle=artifact.lifecycle,
+        credentials_saved_for_client=credentials_saved_for_client,
+    )
+
+
+@router.post("/capabilities/{capability_id}/credentials", response_model=SaveCredentialsResponse)
+def save_credentials_v1(
+    capability_id: str,
+    request: SaveCredentialsRequest,
+    credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
+) -> SaveCredentialsResponse:
+    """Adds (or replaces) stored login credentials for one client, for an already-approved
+    capability -- the multi-tenant-reuse piece: the same login-gated capability can be replayed
+    by many clients, each with their own stored credentials, without re-approving it or embedding
+    any one client's secret in the artifact itself. Admin-only, same as approve."""
+    if not credential.is_admin:
+        raise HTTPException(403, "Client is not authorized to manage capability credentials")
+    try:
+        artifact = store().load(capability_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Capability not found") from exc
+    if artifact.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES:
+        raise HTTPException(403, f"Capability '{capability_id}' is not approved yet")
+
+    declared_inputs = {spec.name for spec in artifact.inputs}
+    if not declared_inputs & CREDENTIAL_FIELD_NAMES:
+        raise HTTPException(
+            400, f"Capability '{capability_id}' does not declare any login credential inputs"
+        )
+
+    tenant_credential_store().save(
+        TenantCredential(
+            capability_id=artifact.qualified_id,
+            client_id=request.client_id,
+            username=request.username,
+            password=request.password,
+        )
+    )
+    return SaveCredentialsResponse(capability_id=artifact.qualified_id, client_id=request.client_id)
