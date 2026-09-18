@@ -1,9 +1,11 @@
 import argparse
 import asyncio
 import json
+import sys
 
 from capability_platform.access.credentials import hash_password
 from capability_platform.access.models import ClientCredential
+from capability_platform.agent.plan_validator import PlanValidationError
 from capability_platform.models import ServiceType
 from capability_platform.runtime import (
     agent_orchestrator,
@@ -44,7 +46,13 @@ async def run(args) -> None:
             )
         )
     elif args.command == "plan":
-        intent, plan, resolutions = await agent_orchestrator().plan_only(args.goal, parse_inputs(args.context))
+        try:
+            intent, plan, resolutions = await agent_orchestrator().plan_only(
+                args.goal, parse_inputs(args.context)
+            )
+        except PlanValidationError as exc:
+            print(json.dumps({"error": "plan_validation_failed", "message": str(exc)}, indent=2))
+            sys.exit(1)
         print(
             json.dumps(
                 {
@@ -56,7 +64,11 @@ async def run(args) -> None:
             )
         )
     elif args.command == "run":
-        result = await agent_orchestrator().execute_goal(args.goal, parse_inputs(args.context))
+        try:
+            result = await agent_orchestrator().execute_goal(args.goal, parse_inputs(args.context))
+        except PlanValidationError as exc:
+            print(json.dumps({"error": "plan_validation_failed", "message": str(exc)}, indent=2))
+            sys.exit(1)
         print(result.model_dump_json(indent=2))
         print(result.synthesized_text)
     elif args.command == "register-client":

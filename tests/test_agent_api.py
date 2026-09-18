@@ -99,13 +99,13 @@ def _register_client(client_id: str, password: str, service_types: list[ServiceT
     )
 
 
-def _install_fake_orchestrator(monkeypatch):
+def _install_fake_orchestrator(monkeypatch, intent_response=None):
     def _factory(environment="production", resolution_authorizer=None):
         artifact_store = ArtifactStore(global_settings.artifact_dir)
         registry = build_registry(artifact_store)
         policy = PolicyEngine(default_policy())
         return AgentOrchestrator(
-            intent_analyzer=IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE)),
+            intent_analyzer=IntentAnalyzer(MockLLMProvider(intent_response or SAVINGS_BALANCE_RESPONSE)),
             planner=Planner(),
             plan_validator=PlanValidator(policy),
             resolver=CapabilityResolver(registry, artifact_store, policy),
@@ -188,3 +188,54 @@ def test_execute_agent_allows_unscoped_capability_regardless_of_service_type(mon
     )
     assert response.status_code == 200
     assert response.json()["result"]["status"] == "success"
+
+
+UNSATISFIABLE_SUB_GOAL_RESPONSE = {
+    "intent": "retrieve_balance_and_create_note",
+    "domain": "member_servicing",
+    "operation": "write",
+    "entities": [{"name": "memberId", "value": "10001", "type": "string"}],
+    "required_outputs": [{"name": "noteId", "type": "string"}],
+    "risk": "reversible",
+    "confidence": 0.85,
+    "sub_goals": [
+        {
+            "description": "Create a servicing note on the member's account.",
+            "operation": "write",
+            "required_inputs": ["memberId", "note"],
+            "produced_outputs": ["noteId"],
+        }
+    ],
+}
+
+
+def test_plan_agent_returns_400_on_unsatisfiable_plan(monkeypatch, tmp_path):
+    """Regression test: a real live run during Phase 10 crashed the CLI with a raw traceback
+    when a plan step needed an input the goal never supplied ('note' content). Both /agent/plan
+    and /agent/execute must surface this as a clean 400, not an unhandled exception."""
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _install_fake_orchestrator(monkeypatch, intent_response=UNSATISFIABLE_SUB_GOAL_RESPONSE)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/plan",
+        json={"goal": "Create a servicing note for member 10001"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
+    assert "missing required inputs" in response.json()["detail"]
+
+
+def test_execute_agent_returns_400_on_unsatisfiable_plan(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _install_fake_orchestrator(monkeypatch, intent_response=UNSATISFIABLE_SUB_GOAL_RESPONSE)
+    client = TestClient(app_module.app)
+
+    response = client.post(
+        "/agent/execute",
+        json={"goal": "Create a servicing note for member 10001", "client_inquiry_id": "req-1"},
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 400
