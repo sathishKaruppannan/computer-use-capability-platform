@@ -133,6 +133,36 @@ def test_conversational_intent_returns_the_reply_verbatim_regardless_of_status()
     assert "unknown" not in text
 
 
+def test_success_shows_a_computed_output_even_when_required_outputs_is_empty():
+    """Regression test for a real bug found live: a terse goal ("account id 10001 balance")
+    identified the right intent and executed successfully, but the model's own required_outputs
+    field came back empty -- the synthesizer used to filter facts through that LLM-derived list,
+    so a genuinely computed value (savingsBalance) silently vanished from the response, leaving
+    "Completed 'retrieve_account_balance'. " with nothing after it. `outputs` (the deterministic
+    aggregator's result) is the trustworthy source; it must be shown regardless of what
+    required_outputs says."""
+    intent = _intent(required_outputs=[])
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=intent, outputs={"savingsBalance": 4250.25}, status=RunStatus.SUCCESS
+    )
+    assert "4250.25" in text
+    assert "savingsBalance" in text
+    assert text != "Completed 'retrieve_account_balance'. "
+
+
+def test_success_shows_a_computed_output_even_when_required_outputs_names_it_differently():
+    """Same bug, the other likely real-world shape: the model names the output something other
+    than the plan's own key (e.g. 'balance' instead of 'savingsBalance')."""
+    from capability_platform.agent.models import RequiredOutput
+
+    intent = _intent(required_outputs=[RequiredOutput(name="balance", type="number")])
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=intent, outputs={"savingsBalance": 4250.25}, status=RunStatus.SUCCESS
+    )
+    assert "4250.25" in text
+    assert "savingsBalance" in text
+
+
 def test_conversational_intent_with_no_reply_falls_back_to_a_generic_acknowledgment():
     conversational = _intent(is_conversational=True, conversational_reply=None)
     text = GroundedSynthesizer.synthesize_agent_result(
