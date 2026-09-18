@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from capability_platform.models import ServiceType
+from capability_platform.settings import settings
 
 
 class DiscoverV1Request(BaseModel):
@@ -27,9 +28,12 @@ class DiscoverV1Request(BaseModel):
         "reconcile this call with the caller's own request log."
     )
     goal: str = Field(
+        max_length=settings.max_goal_length,
         description="Natural-language description of what the capability should accomplish. "
         "Only consulted when no approved capability already exists for "
-        "(service_type, system_identifier); it drives a live Claude discovery run."
+        "(service_type, system_identifier); it drives a live Claude discovery run. Capped at "
+        f"{settings.max_goal_length} characters -- this is a demo target, not a production "
+        "system, and every goal drives at least one real LLM call.",
     )
     environment: Literal["production", "demo"] = Field(
         default="production",
@@ -100,8 +104,13 @@ class DiscoverV1Request(BaseModel):
 
 
 class AgentExecuteRequest(BaseModel):
-    goal: str = Field(description="Natural-language goal, routed through intent analysis, planning, "
-        "and capability resolution before any computer-use discovery is considered.")
+    goal: str = Field(
+        max_length=settings.max_goal_length,
+        description="Natural-language goal, routed through intent analysis, planning, and "
+        "capability resolution before any computer-use discovery is considered. Capped at "
+        f"{settings.max_goal_length} characters -- this is a demo target, not a production "
+        "system, and every goal drives at least one real LLM call.",
+    )
     context: dict[str, Any] = Field(
         default_factory=dict,
         description="Optional execution context: tenant_id, target_url, memberId, "
@@ -111,7 +120,10 @@ class AgentExecuteRequest(BaseModel):
 
 
 class AgentPlanRequest(BaseModel):
-    goal: str = Field(description="Same as AgentExecuteRequest.goal, but nothing is executed.")
+    goal: str = Field(
+        max_length=settings.max_goal_length,
+        description="Same as AgentExecuteRequest.goal, but nothing is executed.",
+    )
     context: dict[str, Any] = Field(default_factory=dict)
 
 

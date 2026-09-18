@@ -1607,3 +1607,51 @@ uv run capability-platform plan --goal "Get the savings balance for member 10002
 uv run pytest -q -m "not e2e"   →  163 passed, 21 deselected   (up from 157 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 13 log — goal length limit (demo-scoped guardrail)
+
+User request: this is a local demo target, not a production system, and every goal drives at
+least one real LLM call -- cap goal length at 200 characters so an accidentally long input can't
+run up cost/context usage, and fail with a clean message rather than proceeding.
+
+`Settings.max_goal_length: int = 200` (new, configurable like `max_discovery_steps`). A new
+shared module, `capability_platform/validation.py` (`GoalTooLongError` + `validate_goal_length()`),
+is the single source of truth, enforced at every layer so nothing can bypass it:
+
+- **REST** (cleanest UX, zero custom exception handling): `Field(max_length=settings.max_goal_length)`
+  on every `goal` field that accepts free text --
+  `AgentExecuteRequest`/`AgentPlanRequest`/`DiscoverV1Request` (new) and the legacy
+  `DiscoveryRequest` (`api/app.py`) -- FastAPI/Pydantic reject with a standard `422` before the
+  request handler (or `agent_orchestrator()`/`discovery_agent()`) ever runs.
+- **Backstop, inside the two methods that actually consume a goal**:
+  `IntentAnalyzer.analyze()` and `ClaudeDiscoveryAgent.discover()` both call
+  `validate_goal_length(goal)` as their first line -- before any LLM call, before a browser
+  session starts, before an `EvidenceCollector` run directory is even meaningfully populated.
+  This is what protects the plain CLI `discover` command (no Pydantic model gates it) and any
+  future caller that bypasses both REST and the orchestrator.
+- **CLI**: `discover`/`plan`/`run` catch `GoalTooLongError`, print a clean JSON error, exit 1 --
+  same pattern as `PlanValidationError`/`ClarificationRequiredError` already established.
+
+New tests: `tests/test_validation.py` (the shared function directly, at and over the limit),
+`test_intent_analyzer.py`/`test_orchestrator.py` (the backstop fires before discovery is ever
+reached), `test_agent_api.py`/`test_v1_api_auth.py` (REST returns `422`, no fake orchestrator
+needed since Pydantic rejects first -- no risk of a real LLM call in these tests either).
+
+**Live-verified**, including catching a real (environmental, not code) regression along the way:
+```
+uv run capability-platform plan --goal "<252-char goal>"
+→ exit 1, {"error": "goal_too_long", "message": "Goal is 252 characters long, which exceeds
+   the 200-character limit for this demo. Please shorten it."}
+```
+The first regression-check re-run of the standard savings-balance goal came back
+`status: failure` with `net::ERR_CONNECTION_REFUSED` -- not a code regression: the demo app
+process had stopped (this session was interrupted by a usage-limit reset partway through the
+phase). Restarted it and re-ran: `status: success`, `outputs: {"savingsBalance": 1220.0}`,
+run `0ba21a99-3e01-44b3-910a-7a638b4f5186`. `git status artifacts/` confirmed clean throughout.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  170 passed, 21 deselected   (up from 163 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```

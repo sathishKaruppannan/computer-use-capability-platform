@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     platform_url: str = "http://127.0.0.1:8000"
     headless: bool = False
     max_discovery_steps: int = 20
+    # Demo-scoped guardrail: this is a local proxy target, not a production system, and every
+    # goal drives at least one real LLM call -- capping length keeps demo usage cheap and
+    # predictable. Enforced uniformly wherever a goal enters the system (see validation.py).
+    max_goal_length: int = 200
     artifact_dir: Path = Path("artifacts")
     evidence_dir: Path = Path("evidence")
     credential_dir: Path = Path("data/credentials")
