@@ -6,7 +6,7 @@ from capability_platform.agent.orchestrator import AgentOrchestrator
 from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
 from capability_platform.capabilities.executor import CapabilityExecutor
-from capability_platform.capabilities.registry import build_registry
+from capability_platform.capabilities.registry import CapabilityRegistry, build_registry
 from capability_platform.capabilities.resolver import CapabilityResolver
 from capability_platform.capabilities.store import ArtifactStore
 from capability_platform.llm.mock_provider import MockLLMProvider
@@ -62,6 +62,7 @@ def _build_orchestrator(
     discovery_agent_factory,
     fake_result: ExecutionResult | None = None,
     intent_response: dict | None = None,
+    resolution_authorizer=None,
 ):
     artifact_store = ArtifactStore(Path("artifacts"))
     registry = build_registry(artifact_store)
@@ -79,6 +80,7 @@ def _build_orchestrator(
         artifact_store=artifact_store,
         discovery_agent_factory=discovery_agent_factory,
         evidence_root=tmp_path,
+        resolution_authorizer=resolution_authorizer,
     )
 
 
@@ -131,6 +133,119 @@ async def test_unresolved_step_falls_back_to_real_discovery_agent(tmp_path):
     assert calls, "discovery agent should have been invoked for an unresolvable step"
     assert result.status == RunStatus.PAUSED
     assert result.execution[0].descriptor_id == "open-account-preferences.v1"
+
+
+def _minimal_artifact(artifact_id: str, lifecycle: str) -> CapabilityArtifact:
+    return CapabilityArtifact.model_validate(
+        {
+            "id": artifact_id,
+            "version": 1,
+            "name": artifact_id,
+            "description": "test fixture",
+            "lifecycle": lifecycle,
+            "application": {
+                "vendor": "Interface Demo",
+                "product": "Legacy Member Servicing",
+                "base_url": "http://127.0.0.1:8001",
+            },
+            "inputs": [],
+            "outputs": [],
+            "steps": [],
+            "success": {"kind": "url"},
+            "discovered_by": "mock:v1",
+        }
+    )
+
+
+async def test_discovery_never_overwrites_an_already_approved_artifact(tmp_path):
+    """Regression test for a real near-miss found during Phase 8: a freshly discovered artifact
+    id colliding with an already-approved capability must never silently overwrite it."""
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    artifact_store.save(_minimal_artifact("colliding-capability", "approved"))
+
+    class _CollidingDiscoveryAgent:
+        async def discover(self, goal, target_url, member_id="10001", **kwargs):
+            return _minimal_artifact("colliding-capability", "draft")
+
+    empty_registry = CapabilityRegistry([])
+    policy = PolicyEngine(default_policy())
+    orchestrator = AgentOrchestrator(
+        intent_analyzer=IntentAnalyzer(MockLLMProvider(OPEN_PREFERENCES_RESPONSE)),
+        planner=Planner(),
+        plan_validator=PlanValidator(policy),
+        resolver=CapabilityResolver(empty_registry, artifact_store, policy),
+        executor=CapabilityExecutor(artifact_store, lambda: _FakeReplayEngine(_fake_success_result())),
+        artifact_store=artifact_store,
+        discovery_agent_factory=lambda: _CollidingDiscoveryAgent(),
+        evidence_root=tmp_path,
+    )
+
+    result = await orchestrator.execute_goal("some goal with no matching capability")
+
+    assert result.status == RunStatus.FAILURE
+    assert result.execution[0].error.code == "DISCOVERY_ID_COLLISION"
+    # The on-disk artifact must be untouched -- still approved, not overwritten by the draft.
+    reloaded = artifact_store.load("colliding-capability.v1")
+    assert reloaded.lifecycle == "approved"
+
+
+async def test_force_rediscover_allows_intentional_overwrite(tmp_path):
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    artifact_store.save(_minimal_artifact("colliding-capability", "approved"))
+
+    class _CollidingDiscoveryAgent:
+        async def discover(self, goal, target_url, member_id="10001", **kwargs):
+            return _minimal_artifact("colliding-capability", "draft")
+
+    empty_registry = CapabilityRegistry([])
+    policy = PolicyEngine(default_policy())
+    orchestrator = AgentOrchestrator(
+        intent_analyzer=IntentAnalyzer(MockLLMProvider(OPEN_PREFERENCES_RESPONSE)),
+        planner=Planner(),
+        plan_validator=PlanValidator(policy),
+        resolver=CapabilityResolver(empty_registry, artifact_store, policy),
+        executor=CapabilityExecutor(artifact_store, lambda: _FakeReplayEngine(_fake_success_result())),
+        artifact_store=artifact_store,
+        discovery_agent_factory=lambda: _CollidingDiscoveryAgent(),
+        evidence_root=tmp_path,
+    )
+
+    result = await orchestrator.execute_goal(
+        "some goal with no matching capability", context={"force_rediscover": True}
+    )
+
+    assert result.execution[0].status == RunStatus.PAUSED
+    reloaded = artifact_store.load("colliding-capability.v1")
+    assert reloaded.lifecycle == "draft"
+
+
+async def test_resolution_authorizer_denies_execution(tmp_path):
+    def _deny(resolution):
+        raise PermissionError("client is not authorized for this capability's service_type")
+
+    def _discovery_agent_factory():
+        raise AssertionError("a denied resolution must not fall through to discovery")
+
+    orchestrator = _build_orchestrator(tmp_path, _discovery_agent_factory, resolution_authorizer=_deny)
+    result = await orchestrator.execute_goal("Get the savings balance for member 10002")
+
+    assert result.status == RunStatus.FAILURE
+    assert result.execution[0].error.code == "SERVICE_TYPE_NOT_AUTHORIZED"
+    assert result.execution[0].descriptor_id == "lookup-member-savings-balance.v1"
+
+
+async def test_resolution_authorizer_allows_execution_when_it_raises_nothing(tmp_path):
+    def _allow(resolution):
+        return None
+
+    def _discovery_agent_factory():
+        raise AssertionError("must not reach discovery for a resolved capability")
+
+    orchestrator = _build_orchestrator(tmp_path, _discovery_agent_factory, resolution_authorizer=_allow)
+    result = await orchestrator.execute_goal("Get the savings balance for member 10002")
+
+    assert result.status == RunStatus.SUCCESS
+    assert result.outputs == {"savingsBalance": 1220.0}
 
 
 async def test_plan_only_does_not_execute_anything(tmp_path):

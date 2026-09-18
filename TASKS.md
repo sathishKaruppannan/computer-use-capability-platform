@@ -1194,3 +1194,117 @@ non-default `system_identifier` in `context` to avoid touching `lookup-member-sa
 again; flagged for the next phase rather than risked here. No mega-prompt-scope work (Sections
 5-21 from the earlier, larger specification) was started, per the Phase 1 assessment's
 recommendation and the user's approval of the PDF/stretch-goal-scoped path only.
+
+## Phase 9 log — closing out Phase 8's deferred items
+
+User confirmed: close out Phase 2/8's deferred items (safety hardening, `require_service_type`
+scoping, live verification of examples 2/3, docs sync) rather than start on the larger
+mega-prompt scope. Planned in five parts before any code changed; all five completed.
+
+### 1. Safety hardening: discovery can no longer silently overwrite an approved capability
+
+`AgentOrchestrator._run_discovery` now checks, before saving a freshly discovered artifact,
+whether an artifact with the same `qualified_id` already exists with a lifecycle in
+`AGENT_EXPOSABLE_LIFECYCLES` (approved/active). If so, it refuses to overwrite it — returns a
+`CapabilityExecutionResult(status=FAILURE, error.code="DISCOVERY_ID_COLLISION")` instead —
+unless the caller explicitly opts in via `context={"force_rediscover": True}` (same convention
+`/v1/discover` already uses). This closes the exact near-miss found in Phase 8 (a resolver miss
+triggered discovery, which then silently re-saved the approved `lookup-member-savings-balance.v1`
+as a draft). New tests: `test_orchestrator.py::test_discovery_never_overwrites_an_already_approved_artifact`,
+`::test_force_rediscover_allows_intentional_overwrite`.
+
+### 2. `require_service_type` scoping on `/agent/execute`
+
+`CapabilityDescriptor` gained an optional `service_type: ServiceType | None` field (additive,
+defaults `None`, backward compatible — existing constructions and tests unaffected), populated
+in `registry.py::_descriptor_from_artifact` from the underlying artifact's own `service_type`.
+`AgentOrchestrator` gained an optional `resolution_authorizer: Callable[[CapabilityResolution],
+None] | None` hook, called per step right before execution (never before discovery/unresolved
+branches, which have nothing to authorize yet); raising `PermissionError` denies that step with
+`error.code="SERVICE_TYPE_NOT_AUTHORIZED"` instead of executing it. `api/agent_routes.py` wires
+this to a real `require_service_type`-equivalent check against the authenticated credential,
+mirroring `api/v1_routes.py::execute_v1`'s own convention (a capability with `service_type=None`
+is invocable by any authenticated caller). Deliberately per-step rather than a blanket 403 on the
+whole request, since a multi-step plan could in principle resolve different steps to different
+service types. Tests: `test_orchestrator.py::test_resolution_authorizer_denies_execution`,
+`::test_resolution_authorizer_allows_execution_when_it_raises_nothing`, and a new
+`tests/test_agent_api.py` (4 tests) proving the real REST wiring end-to-end (401 without auth,
+403-equivalent per-step denial for an unauthorized service_type, success for an authorized one,
+success for a legacy/unscoped capability) — via a fake orchestrator factory that swaps in
+`MockLLMProvider` and a fake `ReplayEngine` but keeps the real `_require_service_type_authorizer`
+logic from `api/agent_routes.py` in the loop, so no live Claude/browser call is needed to prove
+the authorization decision is real.
+
+### 3. Live verification, example 1 revisited: discovery-fallback mechanism proven for real
+
+Literal "Example 2" ("Find member 10001 and open the account preferences page") and full live
+execution of "Example 3" (create-a-servicing-note step) are **not achievable without touching
+`agent/discovery.py`**, which stayed out of scope for this phase — see REPORT.md §7 for the full
+explanation (the discovery agent's success checkpoint, and its artifact-id derivation, are both
+hardcoded to the one savings-balance scenario it was built and evidenced against; `demo_app` also
+has no account-preferences or note-creation surface). Rather than fake a misleading demo, this
+phase substitutes an honest, real verification of the **mechanism** the examples were meant to
+exercise: a goal the resolver genuinely cannot match, run against the live demo app with a real
+Claude call, isolated to a scratch artifact directory (`ARTIFACT_DIR=/tmp/phase9-verify-artifacts`)
+so it could not touch the real `artifacts/` catalog even by accident (verified via `git status
+artifacts/` before and after — clean both times):
+
+```
+ARTIFACT_DIR=/tmp/phase9-verify-artifacts HEADLESS=true uv run capability-platform run \
+  --goal "Get the savings balance for member 10002"
+```
+
+Real result: `resolutions[0].resolution_type == "computer_use_discovery"` (the isolated,
+artifact-free registry had nothing to match), a genuine `ClaudeDiscoveryAgent.discover()` run
+completed against the live demo app, and the overall result is `"status": "paused"` pending
+approval. Evidence, orchestrator run `evidence/runs/6e1b58a4-6913-495d-aa95-8125f9c6410c/`, real
+event chain: `intent.analyzed → plan.created → plan.validated → capability.candidates_retrieved →
+capability.rejected → discovery.fallback_started → capability.executed → result.aggregated →
+result.synthesized`.
+
+### 4. Live verification, example 3: heterogeneous per-step resolution — a genuine finding
+
+Attempted a real live run for `"Find member 10001, retrieve the savings balance, and create a
+servicing note"` (`capability-platform plan --goal "..."`, real Claude call, no execution). Real
+Claude produced intent id `retrieve_account_balance_and_create_note` — a novel id, not
+`member_lookup_balance_and_note` (the exact string the Planner's hardcoded 3-step template is
+keyed on, and not something the model could know to produce, since it has no visibility into the
+Planner's internal template registry). The Planner correctly and safely fell back to **one**
+generic step wrapping the whole goal, which the resolver correctly resolved to
+`COMPUTER_USE_DISCOVERY` (no matching deterministic capability for the compound goal). This is
+the right, safe behavior — a deterministic planner should not guess at an arbitrary decomposition
+for a goal it has no template for — but it means genuine multi-step heterogeneous resolution
+(different steps resolving to different capability sources) cannot be demonstrated via a live,
+unscripted Claude call today; it requires the Planner to recognize the goal shape, which only
+`MockLLMProvider`-driven tests can currently force deterministically
+(`tests/test_planner.py::test_multi_step_plan_preserves_dependencies`,
+`tests/test_capability_resolver.py`). Documented as a real, deliberate scope boundary in
+REPORT.md §7 rather than glossed over — not a defect, but not yet a fully general planner either.
+
+### 5. Docs sync
+
+`README.md`: architecture diagram extended with the Intent→Plan→Resolve layer feeding the same
+discovery/executor nodes as the older `/v1/discover` exact-key path (both now documented as
+coexisting, not merged, since they're genuinely separate mechanisms); new "Goal → capability
+resolution" section explaining the 5-stage pipeline; new "REST: agent-facing goal resolution"
+section with real captured `/agent/execute` output (run `aafceb78-6f6f-43ab-a70d-53d24056e4f9`,
+captured against an isolated platform instance on port 8002 so the user's own already-running
+instance on port 8000 was never touched); `llm/` and updated `capabilities/`/`agent/` rows added
+to the Repository map. `REPORT.md` §1: removed the stale "nothing calls it yet" claim about
+`capabilities/registry.py` (now genuinely wired in), clarified Claude is used in exactly two
+places (discovery, intent analysis) behind one provider-independent seam; §7 Cuts: added the
+example-2/3 limitation as an explicit, non-glossed-over cut (see §3/§4 above). `CLAUDE.md`: added
+architecture rule 9 (goal-directed requests route through the resolver before any discovery) and
+the new `plan`/`run` CLI commands to the Commands section.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  140 passed, 21 deselected   (up from 132 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
+`git status artifacts/` confirmed clean (no changes) before and after every live run in this
+phase. No existing file's prior behavior changed — `CapabilityDescriptor.service_type` is
+additive/optional, `resolution_authorizer` defaults to `None` (identical behavior to Phase 8 when
+omitted), and the discovery collision guard only changes behavior in the exact case it was
+designed to prevent (an id collision with an already-approved capability).

@@ -2,22 +2,29 @@
 
 ## 1. Architecture
 
-The system treats computer use as a **capability compiler for applications without APIs**. The
-intended design: an agent goal first searches a normalized registry containing local tools,
-approved MCP tools, skills, APIs, and recorded UI capabilities; a lightweight embedding retrieves
-semantic candidates; trust, input compatibility, reliability, cost, and risk are the reranking
-seam. When no approved deterministic capability fits, Claude enters a bounded observe-decide-act
-loop over an accessibility-first Playwright surface. A successful trace is compiled into an
-artifact, reviewed, and registered. Subsequent calls go directly to deterministic replay.
+The system treats computer use as a **capability compiler for applications without APIs**. A
+free-text agent goal is never sent straight to computer-use discovery: it first passes through an
+Intent Analyzer (LLM call, structured `TaskIntent` out), a deterministic Planner (no LLM,
+`TaskIntent` → one or more typed `PlanStep`s), and a Capability Resolver that searches a
+normalized registry containing local tools, approved MCP tools, skills, APIs, and recorded UI
+capabilities — a lightweight embedding retrieves semantic candidates, and exact input/output
+compatibility, trust, policy, tenant, and source-priority reranking decide what's actually
+selectable. When no approved deterministic capability fits, Claude enters a bounded
+observe-decide-act loop over an accessibility-first Playwright surface. A successful trace is
+compiled into an artifact, reviewed, and registered. Subsequent calls go directly to deterministic
+replay.
 
-**What's actually wired up today:** the semantic embedding/reranking registry piece
-(`capabilities/registry.py`) is implemented and unit-tested in isolation, but nothing calls it
-yet. A simpler, key-based resolver is wired, though: the authenticated REST surface's
-`POST /v1/discover` takes `(service_type, system_identifier)` and checks
+**What's actually wired up today:** the semantic embedding/reranking registry
+(`capabilities/registry.py`) is connected to the real runtime via `build_registry()` and queried
+by `capabilities/resolver.py` on every `capability-platform plan`/`run` call and every
+`POST /agent/plan`/`/agent/execute` request — not just exercised by its own unit test anymore.
+A second, independent, older resolution path still exists and is unchanged: the authenticated
+REST surface's `POST /v1/discover` takes `(service_type, system_identifier)` and checks
 `ArtifactStore.find_approved_by_service_and_system` first — a hit reuses the existing capability
 with zero LLM calls, cross-client, before ever falling back to Claude discovery on a miss. That's
-exact-key reuse, not semantic retrieval; wiring the embedding registry in front of it for
-fuzzier goal matching is the natural next step, not yet done.
+exact-key reuse, not semantic retrieval, and it predates the general resolver above; unifying the
+two (or deprecating the exact-key path in favor of the semantic one) is a natural next step, not
+yet done.
 
 The implementation is a modular monolith. That keeps the POC observable and easy to run while
 preserving separable boundaries: agent reasoning, capability resolution, policy, surface control,
@@ -26,15 +33,20 @@ separates semantic actions from Playwright; a desktop accessibility or screensho
 adapter can implement the same contract. REST and MCP are adapters over the same application
 services, not separate execution paths.
 
-Claude is the only LLM used during discovery, and only during discovery; replay has no LLM
-client, so cost, latency, and behavior are bounded. OpenAI's GPT-5 mini is available as a
-per-call fallback if a single Anthropic call errors mid-run (never a default, never used while
-Anthropic is healthy) — a project direction independent of the assignment itself, since LLM
-choice is explicitly left to the candidate. A deterministic aggregator owns canonical outputs.
-The optional synthesizer formats only those facts and cannot modify them. MCP is both an
-implemented outbound catalog for learned capabilities and a future normalized input source;
-dynamic installation of arbitrary servers is deliberately excluded because discovery is not
-trust.
+Claude is used in exactly two places, both behind a provider-independent seam
+(`llm/provider.py`, with Anthropic/OpenAI/mock implementations): computer-use discovery
+(`agent/discovery.py`) and intent analysis (`agent/intent_analyzer.py`). Neither the Planner nor
+the deterministic replay path ever instantiates an LLM client — replay has no LLM client at all,
+so cost, latency, and behavior stay bounded on the production execution path. OpenAI's GPT-5 mini
+is available as a per-call fallback if a single Anthropic call errors mid-run (never a default,
+never used while Anthropic is healthy) — a project direction independent of the assignment
+itself, since LLM choice is explicitly left to the candidate. A deterministic aggregator owns
+canonical outputs (exact-key dict copy from each step's typed result, no LLM, no derivation). The
+optional synthesizer formats only those facts and cannot modify them — it takes no LLM provider
+as input at all, so there is no code path for a model's raw output to reach a numeric or entity
+value in the synthesized text. MCP is both an implemented outbound catalog for learned
+capabilities and a future normalized input source; dynamic installation of arbitrary servers is
+deliberately excluded because discovery is not trust.
 
 ## 2. Artifact schema
 
@@ -191,3 +203,22 @@ proceeding) — all listed here in earlier drafts as future work — are now imp
 Determinism & error handling, Escalation & handoff, and Safety). What's still genuinely
 outstanding: artifact signing, an accessibility-based desktop adapter, and a multi-run evaluation
 harness that reports primary/fallback locator rates and stability.
+
+**A specific, deliberately-not-papered-over gap in the goal-resolution pipeline:** the Planner
+and `ClaudeDiscoveryAgent` are both still scenario-scoped rather than fully general. The Planner's
+template registry maps a small, fixed set of known intent ids to pre-built `PlanStep` sequences;
+an unrecognized intent — which is what a real multi-part goal (e.g. "find member 10001, get the
+balance, and create a servicing note") actually produces from a live LLM call, since it has no
+way to know the internal template key names — correctly and safely falls back to one generic step
+covering the whole goal, rather than guessing at a decomposition. `ClaudeDiscoveryAgent` itself
+remains hardcoded to the one savings-balance scenario (success checkpoint text, artifact-id
+derivation) it was built and evidenced against. Both are real, deliberate scope boundaries, not
+oversights — genuinely generalizing either is a larger piece of work than this phase's "close out
+what was deferred" scope, and doing it without breaking the specific scenario that already has
+real evidence behind it needs its own careful pass. What's proven for real instead: a live Claude
+call correctly produces a novel intent for a compound goal and the pipeline handles that safely
+(no crash, no wrong decomposition), and the discovery-fallback mechanism itself is proven end to
+end with a genuine Claude-driven run (see TASKS.md Phase 9). Multi-step heterogeneous resolution
+(different plan steps resolving to different capability sources) is proven deterministically via
+`MockLLMProvider` in `tests/test_planner.py`/`tests/test_capability_resolver.py`, not via a live
+call, for exactly this reason.

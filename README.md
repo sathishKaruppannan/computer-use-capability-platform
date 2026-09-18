@@ -15,13 +15,21 @@ Just want it running, without `uv`, plus test/debug commands? See [RUNNING.md](R
 
 ```mermaid
 flowchart TD
+  CLIP["Option: CLI<br/>plan / run --goal ..."] --> IA
+  RESTA["Option: REST<br/>POST /agent/plan, /agent/execute"] --> IA
   CLID["Option: CLI<br/>discover --goal ..."] --> D
   RESTD["Option: REST<br/>POST /v1/discover"] --> G
   CLIR["Option: CLI<br/>replay / approve"] --> E
   RESTE["Option: REST<br/>/capabilities/{id}/execute<br/>/v1/.../execute"] --> E
   MCPL["Option: MCP<br/>lookup_member_savings_balance"] --> E
 
-  G["Goal + service_type + system_identifier"] --> R[Capability resolver]
+  IA["Goal"] --> IN[Intent analyzer]
+  IN --> PL[Planner]
+  PL --> CR["Capability resolver<br/>(semantic, per plan step)"]
+  CR -->|approved deterministic match| E
+  CR -->|no match| D
+
+  G["Goal + service_type + system_identifier"] --> R["Reuse check<br/>(exact key)"]
   R -->|"approved match for this (service_type, system_identifier)"| X[Reuse existing capability]
   R -->|no match| D[Claude discovery]
   D --> S[Surface adapter]
@@ -39,8 +47,12 @@ flowchart TD
 
 CLI, REST, and MCP are three interface *options* onto the same core, not three separate
 implementations — `list_capabilities` (REST `/capabilities`, MCP) and every execute/replay path
-converge on the same `ArtifactStore`/`ReplayEngine`, and only `POST /v1/discover` currently passes
-through the resolver's reuse check before falling back to Claude discovery (see the note below).
+converge on the same `ArtifactStore`/`ReplayEngine`. Two independent resolution paths exist and
+both fall through to the same Claude discovery / deterministic executor:
+`capability-platform plan`/`run` and `POST /agent/plan`/`/agent/execute` route a free-text goal
+through the semantic `CapabilityResolver` (`agent/orchestrator.py`, per plan step — see "Goal →
+capability resolution" below); `POST /v1/discover` uses a separate, older exact-key reuse check
+(`(service_type, system_identifier)`) that predates it and is unchanged.
 
 **What's actually wired up today, precisely:** `POST /v1/discover` is the live, goal-routed
 resolver — `discover_v1` (`src/capability_platform/api/v1_routes.py`) calls
@@ -61,16 +73,62 @@ compiled plan plus `requested_by` (who asked, and their literal `goal` text, joi
 [docs/REST_API_TEST_SCENARIOS.md §6](docs/REST_API_TEST_SCENARIOS.md#6-admin-approval-queue) for
 real captured examples of all three.
 
-The plain CLI (`discover --goal "..."`) and the unauthenticated REST/MCP surfaces predate this and
-remain two separate, explicit entry points rather than going through the resolver: `discover`
-always runs a fresh Claude discovery (no reuse check), and `replay <capability-id> --input ...`,
+The plain CLI (`discover --goal "..."`) and the unauthenticated REST/MCP surfaces predate the
+resolver work entirely and remain separate, explicit entry points: `discover` always runs a
+fresh Claude discovery (no resolution step at all), and `replay <capability-id> --input ...`,
 REST's unauthenticated `/capabilities/{id}/execute`, and MCP's `lookup_member_savings_balance`
-all require the exact capability id/name. The resolver's match key is the exact
-`(service_type, system_identifier)` pair, not free-text goal similarity — `capabilities/registry.py`
-(the semantic embedding/reranking retrieval described below) is real, tested code
-(`tests/test_models.py::test_semantic_registry_prefers_balance_capability`), but it is not called
-from `discover_v1`, the CLI, or MCP; it remains an implemented, unit-tested building block, not
-part of any live resolution path.
+all require the exact capability id/name. `/v1/discover`'s resolver's match key is the exact
+`(service_type, system_identifier)` pair, not free-text goal similarity.
+
+### Goal → capability resolution
+
+`capability-platform plan`/`run` and `POST /agent/plan`/`POST /agent/execute` are the
+natural-language entry points: a free-text goal is never sent straight to Claude computer-use
+discovery. It's routed through, in order —
+
+1. **Intent Analyzer** (`agent/intent_analyzer.py`) — an LLM call (pluggable provider,
+   `llm/{anthropic,openai,mock}_provider.py`) that extracts a structured `TaskIntent`: intent id,
+   entities, required outputs, read/write operation, risk, confidence. Never executes anything.
+2. **Planner** (`agent/planner.py`) — deterministic, no LLM call. Converts the intent into one or
+   more `PlanStep`s with declared inputs/outputs/dependencies, from a small template registry
+   keyed by intent id; an intent with no known template becomes one generic step wrapping the
+   whole goal.
+3. **PlanValidator** (`agent/plan_validator.py`) — rejects cyclic dependencies, missing inputs,
+   and malformed plans; flags steps needing approval via the existing `PolicyEngine`.
+4. **CapabilityResolver** (`capabilities/resolver.py`) — per step, queries `CapabilityRegistry`
+   (now wired into the real runtime via `capabilities/registry.py::build_registry`, not just its
+   own unit test), checks exact input/output/trust/policy/tenant compatibility, ranks usable
+   candidates by source priority + reliability + trust (`capabilities/ranking.py`), and selects
+   the best deterministic match — or falls back to `COMPUTER_USE_DISCOVERY` only when nothing
+   approved fits.
+5. **Executor / Orchestrator** (`capabilities/executor.py`, `agent/orchestrator.py`) — a
+   selected deterministic capability runs through the real, unmodified `ReplayEngine`; an
+   unresolved step falls through to the real, unmodified `ClaudeDiscoveryAgent`. Results are
+   deterministically aggregated (exact-key dict copy, no LLM) and formatted by an extended
+   `GroundedSynthesizer` that takes no LLM output as input — it cannot alter a canonical value.
+
+```bash
+uv run capability-platform plan --goal "Get the savings balance for member 10002"   # resolve only, nothing executes
+uv run capability-platform run  --goal "Get the savings balance for member 10002"   # resolves AND executes
+```
+Real captured output for the `run` command above: resolves to `lookup-member-savings-balance.v1`
+via `COMPUTER_USE_CAPABILITY` (no new discovery — evidence shows no `discovery.fallback_started`
+event) and executes through the real `ReplayEngine`:
+```json
+{ "status": "success", "outputs": { "savingsBalance": 1220.0 } }
+```
+When no approved capability matches, the same command genuinely falls back to Claude discovery —
+proven with a real run against an isolated, empty artifact directory (so it couldn't touch the
+real capability catalog even accidentally):
+```bash
+ARTIFACT_DIR=/tmp/verify-artifacts HEADLESS=true uv run capability-platform run \
+  --goal "Get the savings balance for member 10002"
+```
+Real captured result: `resolutions[0].resolution_type == "computer_use_discovery"`, a genuine
+Claude-driven discovery run against the live demo app produces a new draft artifact, and the
+overall result is `"status": "paused"` pending admin approval — evidence shows
+`discovery.fallback_started` before a real `discovery.observed`/`discovery.decided`/
+`discovery.acted` loop. See `TASKS.md` (Phase 9) for the full evidence trail and run ids.
 
 The full design and trade-offs are in [REPORT.md](REPORT.md).
 
@@ -328,6 +386,46 @@ Omitting `-u`, using wrong credentials, or using a credential not authorized for
 `tests/test_v1_api_auth.py`. The execute responses above are real output, captured from a local
 run with `demo-client` (registered exactly as shown above) against the same approved artifact.
 
+### REST: agent-facing goal resolution (`/agent/plan`, `/agent/execute`)
+
+Same authenticated `/v1`-style surface (`Depends(authenticate_client)`), but the request is a
+free-text `goal` instead of a `service_type`/`system_identifier` pair — see
+"Goal → capability resolution" above for the pipeline this drives.
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/execute -u demo-client:secret123 \
+  -H 'content-type: application/json' -d '{
+    "goal": "Get the savings balance for member 10002",
+    "client_inquiry_id": "doc-example-1"
+  }'
+```
+
+Real captured output (abbreviated — the full response also includes `intent`, `plan`, and
+`resolutions` for auditability):
+
+```json
+{
+  "run_id": "aafceb78-6f6f-43ab-a70d-53d24056e4f9",
+  "result": {
+    "status": "success",
+    "outputs": { "savingsBalance": 1220.0 },
+    "business_code": null,
+    "synthesized_text": "Completed 'retrieve_account_balance'. savingsBalance: 1220.0"
+  }
+}
+```
+
+`resolutions[0].resolution_type == "computer_use_capability"` and
+`resolutions[0].selected.descriptor.id == "lookup-member-savings-balance.v1"` — resolved to the
+existing artifact, zero new discovery. `POST /agent/plan` takes the same request shape and runs
+identical resolution but executes nothing (no `execution`/`result` in the response — just
+`intent`, `plan`, `resolutions`), for a dry-run preview of what a goal would resolve to.
+
+A capability with a `service_type` the calling credential isn't authorized for is rejected the
+same way `/v1/capabilities/{id}/execute` rejects one (`error.code == "SERVICE_TYPE_NOT_AUTHORIZED"`
+in the per-step `execution` entry, not a blanket `403` — since a multi-step plan could in
+principle resolve different steps to different service types). See `tests/test_agent_api.py`.
+
 ### MCP
 
 ```bash
@@ -557,10 +655,11 @@ filesystem or CLI access just to find out a draft exists.
 
 | Path | Responsibility |
 |---|---|
-| `agent/` | Claude observe-decide-act discovery |
+| `agent/` | Claude observe-decide-act discovery; intent analysis, planning, and orchestration (`models.py`, `intent_analyzer.py`, `planner.py`, `plan_validator.py`, `orchestrator.py`) |
+| `llm/` | Provider-independent LLM seam (`provider.py` Protocol; Anthropic/OpenAI/mock implementations) |
 | `models.py` | Typed artifact and result contracts |
 | `computer_use/` | Surface seam and no-LLM replay |
-| `capabilities/` | Artifact store and semantic registry |
+| `capabilities/` | Artifact store, semantic registry (now wired into the real runtime), resolver, ranking, executor |
 | `policy/` | Independent URL, action, and risk authorization |
 | `intervention/` | Control ownership and resume signal |
 | `observability/` | Redacted JSONL evidence and screenshots |

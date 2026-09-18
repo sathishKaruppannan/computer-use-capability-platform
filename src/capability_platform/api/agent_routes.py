@@ -4,13 +4,16 @@ discovery is considered. Authenticated the same way as /v1/* (never the unauthen
 surface): /agent/execute can trigger live discovery, the same cost/side-effect profile as
 /v1/discover.
 
-Known simplification: per-capability require_service_type scoping is not applied here, unlike
-/v1/capabilities/{id}/execute -- the orchestrator can resolve to any capability dynamically,
-not a single known id, so there is no single service_type to check up front."""
+/agent/execute enforces the same require_service_type scoping /v1/capabilities/{id}/execute
+does, just resolved per-step after capability resolution rather than known up front from the
+request -- the orchestrator can resolve to any capability dynamically, so there is no single
+service_type to check before resolving. A capability with no service_type (legacy/unscoped, same
+convention as api/v1_routes.py::execute_v1) is invocable by any authenticated caller."""
 
 from fastapi import APIRouter, Depends
 
 from capability_platform.access.models import ClientCredential
+from capability_platform.agent.models import CapabilityResolution
 from capability_platform.api.auth import authenticate_client
 from capability_platform.api.schemas.requests import AgentExecuteRequest, AgentPlanRequest
 from capability_platform.api.schemas.responses import (
@@ -23,13 +26,25 @@ from capability_platform.runtime import agent_orchestrator
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 
+def _require_service_type_authorizer(credential: ClientCredential):
+    def _authorize(resolution: CapabilityResolution) -> None:
+        descriptor = resolution.selected.descriptor if resolution.selected else None
+        service_type = descriptor.service_type if descriptor else None
+        if service_type is not None and service_type not in credential.authorized_service_types:
+            raise PermissionError(
+                f"Client '{credential.client_id}' is not authorized for service_type={service_type}"
+            )
+
+    return _authorize
+
+
 @router.post("/execute", response_model=AgentExecuteResponse)
 async def execute_agent(
     request: AgentExecuteRequest,
     credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
 ) -> AgentExecuteResponse:
-    del credential  # authentication only; no per-capability scoping check here, see module docstring
-    result = await agent_orchestrator().execute_goal(request.goal, request.context)
+    orchestrator = agent_orchestrator(resolution_authorizer=_require_service_type_authorizer(credential))
+    result = await orchestrator.execute_goal(request.goal, request.context)
     return AgentExecuteResponse(
         run_id=result.run_id,
         intent=result.intent,
