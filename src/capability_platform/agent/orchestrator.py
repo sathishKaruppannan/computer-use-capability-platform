@@ -50,6 +50,11 @@ class _DiscoveryAgent(Protocol):
         extra_known_values: dict[str, str] | None = None,
         system_identifier: str | None = None,
         run_id: str | None = None,
+        capability_hint: str | None = None,
+        name_hint: str | None = None,
+        description_hint: str | None = None,
+        output_type_hint: str | None = None,
+        output_description_hint: str | None = None,
     ) -> CapabilityArtifact: ...
 
 
@@ -243,11 +248,22 @@ class AgentOrchestrator:
         agent = self.discovery_agent_factory()
         target_url = context.get("target_url", settings.target_url)
         member_id = intent.entity("memberId") or context.get("memberId", "10001")
+        output_type_hint, output_description_hint = self._output_hint(step, intent)
+        # intent.intent == "unknown" is the IntentAnalysisError sentinel (see
+        # _intent_plan_resolve) -- there's nothing meaningful to hint from in that case, so fall
+        # through to discover()'s own original hardcoded defaults rather than naming an artifact
+        # "unknown".
+        known_intent = intent.intent != "unknown"
         artifact = await agent.discover(
             resolution.discovery_goal or step.description,
             target_url,
             member_id,
             system_identifier=context.get("system_identifier"),
+            capability_hint=intent.intent if known_intent else None,
+            name_hint=intent.intent.replace("_", " ").title() if known_intent else None,
+            description_hint=step.description if known_intent else None,
+            output_type_hint=output_type_hint,
+            output_description_hint=output_description_hint,
         )
 
         # Safety guard: ClaudeDiscoveryAgent's own artifact-id derivation can collide with an
@@ -309,6 +325,19 @@ class AgentOrchestrator:
             return self.artifact_store.load(qualified_id)
         except FileNotFoundError:
             return None
+
+    @staticmethod
+    def _output_hint(step: PlanStep, intent: TaskIntent) -> tuple[str | None, str | None]:
+        """Matches this step's first produced output against the TaskIntent's own
+        required_outputs (by exact name) to steer discover()'s compiled OutputSpec type/
+        description, instead of it always hardcoding type='number'/'Current savings balance'."""
+        if not step.produced_outputs:
+            return None, None
+        target_name = step.produced_outputs[0]
+        for output in intent.required_outputs:
+            if output.name == target_name:
+                return output.type, (output.description or None)
+        return None, None
 
     @staticmethod
     def _collect_inputs(step: PlanStep, intent: TaskIntent, context: dict[str, Any]) -> dict[str, Any]:
