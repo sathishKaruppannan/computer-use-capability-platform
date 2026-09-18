@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from capability_platform.api.admin import ADMIN_HTML
+from capability_platform.api.agent_routes import router as agent_router
 from capability_platform.api.v1_routes import router as v1_router
 from capability_platform.capabilities.demo_seed import build_approval_demo, build_pause_demo
 from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
@@ -16,6 +17,7 @@ from capability_platform.settings import settings
 
 app = FastAPI(title="Computer-Use Capability Platform", version="0.1.0")
 app.include_router(v1_router)
+app.include_router(agent_router)
 
 
 class DiscoveryRequest(BaseModel):

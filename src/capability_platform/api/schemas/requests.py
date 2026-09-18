@@ -99,6 +99,22 @@ class DiscoverV1Request(BaseModel):
     )
 
 
+class AgentExecuteRequest(BaseModel):
+    goal: str = Field(description="Natural-language goal, routed through intent analysis, planning, "
+        "and capability resolution before any computer-use discovery is considered.")
+    context: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional execution context: tenant_id, target_url, memberId, "
+        "allow_discovery, or any other value a plan step's inputs may need.",
+    )
+    client_inquiry_id: str = Field(description="Caller-generated correlation id for this run.")
+
+
+class AgentPlanRequest(BaseModel):
+    goal: str = Field(description="Same as AgentExecuteRequest.goal, but nothing is executed.")
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecuteV1Request(BaseModel):
     client_inquiry_id: str = Field(
         description="Caller-generated correlation id for this execution, recorded on the "

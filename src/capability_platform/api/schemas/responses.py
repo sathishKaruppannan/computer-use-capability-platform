@@ -7,17 +7,50 @@ ExecutionResult / RunError in models.py for that response's field-by-field contr
 how a client tells "failed, safe to requeue" apart from "failed, needs review first"."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
+from capability_platform.agent.models import (
+    CapabilityExecutionResult,
+    CapabilityResolution,
+    ExecutionPlan,
+    TaskIntent,
+)
 from capability_platform.models import (
     ApplicationBinding,
     Checkpoint,
     OutputSpec,
     ParameterSpec,
+    RunStatus,
     ServiceType,
     Step,
 )
+
+
+class AgentResultSummary(BaseModel):
+    status: RunStatus = Field(description="Overall run status, aggregated across every plan step.")
+    outputs: dict[str, Any] = Field(description="Deterministically aggregated canonical outputs.")
+    business_code: str | None = Field(default=None, description="First business outcome code encountered, if any.")
+    synthesized_text: str = Field(
+        description="Grounded synthesis of the canonical outputs -- templated, never LLM-derived."
+    )
+
+
+class AgentExecuteResponse(BaseModel):
+    run_id: str
+    intent: TaskIntent
+    plan: ExecutionPlan
+    resolutions: list[CapabilityResolution]
+    execution: list[CapabilityExecutionResult]
+    result: AgentResultSummary
+
+
+class AgentPlanResponse(BaseModel):
+    run_id: str
+    intent: TaskIntent
+    plan: ExecutionPlan
+    resolutions: list[CapabilityResolution]
 
 
 class DiscoverV1Response(BaseModel):

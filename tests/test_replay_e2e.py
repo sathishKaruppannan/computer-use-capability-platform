@@ -57,6 +57,15 @@ async def test_replay_structured_failure_on_broken_locator(tmp_path):
     assert Path(result.error.evidence_path).exists()
 
 
+def test_replay_module_imports_no_llm_sdk():
+    """Static regression guard, no browser needed: the invariant this whole platform depends on
+    -- `computer_use/replay.py` has zero anthropic/openai imports -- stays true even if a future
+    change adds a call without adding a top-level import that this text scan would also catch."""
+    source = Path("src/capability_platform/computer_use/replay.py").read_text(encoding="utf-8")
+    assert "anthropic" not in source
+    assert "openai" not in source
+
+
 @pytest.mark.e2e
 async def test_replay_never_instantiates_llm_client(tmp_path, monkeypatch):
     """Replay must not instantiate or call an LLM client, even indirectly."""
