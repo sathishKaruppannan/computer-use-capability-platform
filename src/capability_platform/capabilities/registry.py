@@ -1,14 +1,42 @@
 import hashlib
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from capability_platform.capabilities.store import ArtifactStore
 from capability_platform.models import CapabilityArtifact, CapabilityDescriptor, RiskLevel
 
+# The extension point for a real embedding provider -- see _embedding() below for the default
+# and its docstring for how a real one would plug in. resolver.py/ranking.py never call this
+# directly; they only ever see the float vector CapabilityRegistry.search() returns, so swapping
+# the function passed here is the entire migration -- no downstream change needed.
+EmbeddingFn = Callable[[str], list[float]]
+
 
 def _embedding(text: str, dimensions: int = 128) -> list[float]:
-    """Dependency-free hashing embeddings for the POC; replaceable by a vector provider."""
+    """Dependency-free hashing-trick embedding -- the default EmbeddingFn, used unless a real one
+    is injected via CapabilityRegistry(embed_fn=...) / build_registry(embed_fn=...). No API key,
+    no network call, fully deterministic; the real cost is that it only rewards shared literal
+    tokens ("balance" and "savings" get no special affinity the way a real embedding model would
+    give them). That's a capability-RETRIEVAL limitation only, distinct from and not the fix for
+    the member/account entity-naming gap -- that's the intent-analysis prompt's job (see
+    agent/prompts/intent_v2.py), because entity extraction happens upstream of this registry
+    entirely and never touches these vectors.
+
+    Placeholder for a real provider, kept here for future reference. Any of these plug in as the
+    injected embed_fn with zero change to resolver.py/ranking.py:
+      - OpenAI `text-embedding-3-small` -- this codebase already has optional OPENAI_API_KEY
+        wiring (currently just a discovery fallback, see llm/openai_provider.py);
+        `client.embeddings.create(model="text-embedding-3-small", input=text).data[0].embedding`.
+      - Voyage AI -- Anthropic's own recommended embedding provider, since Claude has no native
+        embeddings endpoint; fits a "Claude-first" story if that matters for the demo narrative.
+      - A local `sentence-transformers` model (e.g. `all-MiniLM-L6-v2`) -- real semantic vectors,
+        no API key, no network call at runtime, at the cost of a heavier dependency (torch).
+    The trade-off against all three: a network call (the first two) or a heavier install (the
+    third), plus a per-capability embed at registry build time and a per-goal embed on every
+    resolve() call -- negligible at this project's scale, but the real reason this demo ships
+    with the free, instant, zero-understanding version instead.
+    """
     vector = [0.0] * dimensions
     for token in re.findall(r"[a-z0-9]+", text.lower()):
         digest = hashlib.sha256(token.encode()).digest()
@@ -23,7 +51,10 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 
 class CapabilityRegistry:
-    def __init__(self, capabilities: Iterable[CapabilityDescriptor] = ()) -> None:
+    def __init__(
+        self, capabilities: Iterable[CapabilityDescriptor] = (), embed_fn: EmbeddingFn = _embedding
+    ) -> None:
+        self._embed = embed_fn
         self._items: dict[str, CapabilityDescriptor] = {}
         self._vectors: dict[str, list[float]] = {}
         for capability in capabilities:
@@ -32,10 +63,10 @@ class CapabilityRegistry:
     def register(self, capability: CapabilityDescriptor) -> None:
         self._items[capability.id] = capability
         content = " ".join([capability.name, capability.description, *capability.tags])
-        self._vectors[capability.id] = _embedding(content)
+        self._vectors[capability.id] = self._embed(content)
 
     def search(self, intent: str, limit: int = 5) -> list[tuple[CapabilityDescriptor, float]]:
-        query = _embedding(intent)
+        query = self._embed(intent)
         candidates = []
         for key, capability in self._items.items():
             if capability.trust in {"blocked", "discovered"}:
@@ -106,12 +137,16 @@ def _member_financial_summary_descriptor() -> CapabilityDescriptor:
 
 
 def build_registry(
-    artifact_store: ArtifactStore, extra: Iterable[CapabilityDescriptor] = ()
+    artifact_store: ArtifactStore,
+    extra: Iterable[CapabilityDescriptor] = (),
+    embed_fn: EmbeddingFn = _embedding,
 ) -> CapabilityRegistry:
     """Builds a CapabilityRegistry from every currently-approved source: computer-use artifacts
     (ArtifactStore.list_approved()), the one existing skill, and any caller-supplied extras (the
-    seam for future local_tool/mcp_tool/api descriptors -- never fabricated here)."""
+    seam for future local_tool/mcp_tool/api descriptors -- never fabricated here). `embed_fn`
+    passes through to CapabilityRegistry -- see _embedding()'s docstring for how a real embedding
+    provider would be injected here instead of the default hashing trick."""
     descriptors = [_descriptor_from_artifact(artifact) for artifact in artifact_store.list_approved()]
     descriptors.append(_member_financial_summary_descriptor())
     descriptors.extend(extra)
-    return CapabilityRegistry(descriptors)
+    return CapabilityRegistry(descriptors, embed_fn=embed_fn)

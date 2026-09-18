@@ -1902,3 +1902,39 @@ a restart to pick this fix up.
 uv run pytest -q -m "not e2e"   →  211 passed, 21 deselected   (up from 204 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 16 log — real-embedding placeholder for the capability registry
+
+Follow-up question from Phase 15's fix: "we have embeddings/vector search, why didn't that solve
+the member/account wording problem, and what are our options for a real one?" Answer given first
+(the hashing-trick embedding only matches literal tokens, has no semantic understanding, and isn't
+even in the code path that does entity extraction -- that's the intent-analysis prompt's job, not
+the registry's), then the user asked for a real, code-level extension point plus a documented
+reason/trade-off for not wiring one up now -- not a behavior change.
+
+`capabilities/registry.py::CapabilityRegistry` and `build_registry()` both gained an injectable
+`embed_fn: Callable[[str], list[float]]` parameter, defaulting to the existing `_embedding()`
+hashing trick so today's behavior is provably unchanged (a new test asserts
+`build_registry(...)._embed is _embedding`). `_embedding()`'s docstring is now the actual
+placeholder for future reference: three concrete options (OpenAI `text-embedding-3-small`, Voyage
+AI -- Anthropic's own recommended embedding provider, since Claude has no native embeddings
+endpoint -- and a local `sentence-transformers` model), each with what it costs (a network call,
+an API key, or a heavier install) versus what today's version gives up (real semantic matching).
+`resolver.py`/`ranking.py` need zero changes either way -- they only ever see the resulting float
+vector and a score, which is the whole point of the seam.
+
+New tests: `test_models.py::test_registry_accepts_an_injected_embedding_provider` (a fake,
+non-hashing-trick provider is proven to actually be called and actually drive `search()`'s
+ranking, not silently ignored) and `test_build_registry_defaults_to_the_hashing_trick_embedding`
+(backward compatibility, asserted directly on the object, not just "tests still pass").
+
+The field guide (external `claude.ai` artifact, not part of this repo) was updated in the same
+pass with the trade-off table above, per the user's request to document "why didn't use and the
+trade-off" alongside the code.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  213 passed, 21 deselected   (up from 211 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
