@@ -98,9 +98,33 @@ a fake adapter with zero Playwright import. The one deliberate exception is the 
 human-handoff mechanism, which hands a human/operator the literal live Playwright `Page` — that's
 inherent to what "same session" means for a browser surface, not a determinism-path leak. Web
 uses Playwright accessibility/DOM data; legacy frames can add frame paths and table-relative
-XPath through the same `Locator` model; desktop can map role/name/value to UI Automation or AX
-APIs behind a new `SurfaceAdapter` implementation, with screenshot coordinates as the last
-fallback — no change to `ReplayEngine` or the error contract required.
+XPath through the same `Locator` model.
+
+**Desktop `SurfaceAdapter` — design (PDF §3.7: "design, not necessarily build").** A
+`DesktopSurface` implementing the same Protocol needs no change to `ReplayEngine`, `Step`,
+`Locator`, or the error contract — only a new mapping from `Locator.strategy`/`value`/`name` to a
+platform accessibility API, exactly as `PlaywrightSurface` maps them to Playwright's own
+role/label/text/css/xpath selectors today:
+
+| `Locator.strategy` | Web (`PlaywrightSurface`, today) | Desktop (design) |
+|---|---|---|
+| `role` | ARIA role + accessible name | Windows UI Automation `ControlType` + `Name`, or macOS `AXRole`/`AXTitle` |
+| `label` | associated `<label>` text | UIA `LabeledBy` / AX `AXDescription` |
+| `text` | visible text content | UIA `Name`/`ValuePattern`, AX `AXValue` |
+| `css` / `xpath` | DOM query | not meaningful on desktop — a `DesktopSurface` would reject these strategies at discovery/replay time rather than silently degrading, so a desktop artifact never depends on a locator kind it can't actually resolve |
+| coordinates (fallback) | pixel click via Playwright | pixel click via OS-level input injection (already the documented last resort for both surfaces) |
+
+`observe()` returns the same shape `_decide()` already consumes (a serialized accessibility
+tree), built from `UIAutomation`/`pywinauto` on Windows or the `AXUIElement` tree via `pyobjc` on
+macOS instead of Playwright's accessibility snapshot — the discovery loop and its prompt don't
+change, since they already reason over "the current accessible-tree observation," not "the
+current DOM." `click`/`type`/`extract`/`visible`/`current_url` (desktop: current window title,
+the closest analog) map onto the equivalent platform calls. The `screenshot()` method and
+coordinate-fallback locator already exist for exactly this "no other reliable signal" case. What
+stays a real cut: an actual `DesktopSurface` implementation and a second target application to
+prove it against — this project implements against one concrete (web) surface per the PDF's own
+brief, and building desktop automation purely to exercise this design would be the kind of
+breadth the PDF explicitly doesn't reward.
 
 Artifacts bind to vendor/product and supported application versions, not directly to one tenant,
 so the same recorded flow is reused across every institution running that product rather than
@@ -138,13 +162,49 @@ conditional branching accumulating inside one artifact. Canary replay and per-lo
 telemetry catch drift between recordings, well before it would cause a silent wrong answer in
 production.
 
-**Authentication is the one piece deliberately left open, not designed here** (see Cuts) —
-`ErrorCategory.AUTH` exists so replay can *classify* an auth failure distinctly from other hard
-failures, but there's no login-flow design, credential strategy, or per-tenant auth-mode
-selection (SSO/basic/session-cookie/API key) in this artifact model. A real version would need a
-separate, versioned "login capability" per auth mode that a tenant's binding references as a
-precondition, with its own stricter redaction rules — credentials must never enter an artifact
-or an evidence log — but that's a distinct piece of design this project doesn't attempt.
+**Multi-tenant authentication — design (Phase 11; per the PDF's own §3.7 scope, "design, not
+necessarily build").** `ErrorCategory.AUTH` already exists so replay can *classify* an auth
+failure distinctly from other hard failures. The design that closes this gap without inventing a
+second artifact model:
+
+- **A login capability is its own versioned `CapabilityArtifact`, not a step embedded in every
+  other artifact.** Same schema as any other capability — `inputs` declares the credential
+  fields it needs (`username`/`password`, or `apiKey`, exactly the `ParameterSpec(sensitive=True)`
+  shape `_credential_input_specs` already builds for the demo's `/secure/*` flow), `outputs`
+  declares what it produces (a session token/cookie identifier), and its `steps` are ordinary
+  navigate/type/click/checkpoint steps like any other artifact — the login form *is* just another
+  UI flow to discover once and replay deterministically, no new mechanism needed.
+- **`ApplicationBinding` gains an `auth_mode: Literal["none", "credentials", "session_cookie",
+  "api_key", "sso"] | None` field and, when not `"none"`, a `login_capability_id` reference.**
+  `tenant_overrides[tenant_id]` can override both, so two tenants on the same vendor product can
+  run different auth modes (one SSO, one basic) against the same base recorded flow. SSO
+  (SAML/OIDC redirect) is the one mode that can't be driven by typed username/password fields the
+  same way — its login capability's `inputs` would instead reference a pre-established session
+  artifact (see below) rather than raw credentials, since a redirect-based flow isn't meaningfully
+  parameterizable the way a form post is.
+- **Session lifecycle, not per-call credentials.** `ExecuteV1Request.inputs` carrying raw
+  credentials on every single call would be exactly the kind of credential handling CLAUDE.md
+  rule 3 exists to prevent. Instead: `ReplayEngine`, before running an artifact whose binding
+  declares `auth_mode != "none"`, checks a per-`(tenant_id, application)` session cache (cookie
+  jar / bearer token, keyed and TTL'd, held in the same trust boundary as `access/credentials.py`
+  today — never written into an artifact or an evidence log). A cache miss or an `AUTH`-category
+  checkpoint failure mid-run (the demo already has a real analog: member `10005` simulates an
+  expired session) triggers the login capability once via the existing `ReplayEngine`/
+  `CapabilityExecutor` machinery, caches the resulting session, then retries the original step —
+  the same bounded-retry shape `ErrorRule.recovery="retry"` already implements, just retrying
+  after a re-auth instead of a wait.
+- **Credentials themselves live in a secrets store keyed by `tenant_id`**, resolved at the moment
+  the login capability runs — never passed through `context`/request bodies from a calling agent,
+  never logged. `access/credentials.py`'s existing PBKDF2-hashed-at-rest pattern is the right
+  shape for *client* credentials; tenant-application credentials would need their own store with
+  the same trust properties (hashed/encrypted at rest, never round-tripped in a response body),
+  which is real infrastructure this project doesn't build — the design boundary is exactly the
+  `access/` package seam already established.
+
+What stays a real cut, honestly: an actual secrets-vault implementation, and a second working
+example of a non-credentials `auth_mode` (only the demo's basic-auth `/secure/*` flow is real and
+evidenced) — building either would be exactly the "scaling infrastructure" the PDF says isn't
+rewarded for a project scoped to one concrete surface.
 
 ## 5. Escalation & handoff
 
