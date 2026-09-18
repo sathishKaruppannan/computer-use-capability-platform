@@ -1084,3 +1084,113 @@ uv run python scripts/validate_evidence.py
    and fixed this round); the `SurfaceAdapter` gap and the unwired semantic registry, named
    explicitly rather than glossed over — "here's exactly what I'd do next and why it wasn't
    first."
+
+## Phase 8 log — Intent → Plan → Capability Resolution pipeline (session reassessment follow-through)
+
+Closes the one gap the codebase itself already documented honestly (README/REPORT: the semantic
+`CapabilityRegistry` was "implemented and unit-tested in isolation, but nothing calls it yet").
+A natural-language goal now routes through structured intent analysis, deterministic planning,
+and capability resolution **before** any computer-use discovery is considered — discovery is
+reached only when no approved deterministic capability matches. This followed a two-phase
+process with the user: (1) a Phase 1 assessment comparing the actual PDF requirements against
+both the existing codebase and a separately-supplied, much larger specification, documenting
+where the larger spec exceeded the PDF's own "no feature breadth" guidance and scoping Phase 2 to
+the PDF-aligned subset; (2) this Phase 2 build, approved in detail (task list, files, Pydantic
+contracts, tests) before any code was written.
+
+**New modules:** `agent/models.py` (11 Pydantic models: `TaskIntent`, `ExtractedEntity`,
+`RequiredOutput`, `PlanStep`, `ExecutionPlan`, `ResolutionType`, `CapabilityCandidate`,
+`CapabilityResolution`, `CapabilityExecutionRequest`, `CapabilityExecutionResult`, `AgentResult`);
+`llm/{provider,anthropic_provider,openai_provider,mock_provider}.py` (provider-independent LLM
+seam, mirroring the existing `SurfaceAdapter` pattern); `agent/prompts/intent_v1.py` +
+`agent/intent_analyzer.py` (Layer 1: NL → TaskIntent, never executes anything); `agent/planner.py`
+(Layer 2: deterministic TaskIntent → ExecutionPlan, no LLM call); `agent/plan_validator.py`
+(Layer 3: cycle/missing-input/policy checks, reusing the existing `PolicyEngine` unmodified);
+`capabilities/resolver.py` + `capabilities/ranking.py` (Layer 3.5: registry query, input/output/
+trust/policy/tenant compatibility, weighted ranking, fallback-to-discovery decision);
+`capabilities/executor.py` (Layer 4: source-keyed dispatch table calling the real, unmodified
+`ReplayEngine`); `agent/orchestrator.py` (composes all of the above plus the existing
+`discovery_agent()`/`replay_engine()` factories — never re-implements either); `api/agent_routes.py`
+(`POST /agent/execute`, `POST /agent/plan`).
+
+**Additive-only edits** (no existing behavior changed): `capabilities/registry.py` (new
+`build_registry()` function), `synthesis/result.py` (new `synthesize_agent_result()` — takes no
+`LLMProvider` parameter at all, so no provider output can ever reach a numeric/entity value in
+synthesized text), `runtime.py` (new factory functions), `cli.py` (`plan`/`run` subcommands),
+`api/app.py` (one `include_router` line), `api/schemas/{requests,responses}.py` (new DTOs).
+**Not touched:** `computer_use/replay.py`, `models.py`, `policy/engine.py`, `agent/discovery.py`,
+`api/v1_routes.py` — verified via `git status` after the whole phase (only the files above show
+as modified/new) and via a new static regression test,
+`test_replay_e2e.py::test_replay_module_imports_no_llm_sdk` (no browser needed): asserts
+`"anthropic"`/`"openai"` do not appear anywhere in `replay.py`'s source text.
+
+**Two real defects found and fixed during implementation** (not just claimed — reproduced,
+diagnosed, fixed, and re-verified against real output, the same standard the rest of this file
+holds itself to):
+
+1. **Resolver input-compatibility check was backwards.** Originally: "does the step's declared
+   inputs appear in the descriptor's input schema" — but that only checks the descriptor doesn't
+   reject inputs the step offers, not that the descriptor doesn't *need more* than the step
+   supplies. Caught empirically: running the real committed artifacts through
+   `CapabilityRegistry.search()` showed `lookup-savings-balance-legacy-member-servicing-demo-secure.v1`
+   (needs `memberId` **and** `username`/`password`) tied in semantic score with the real target
+   artifact — and would have been wrongly selectable despite needing credentials the step never
+   supplies. Fixed in `capabilities/resolver.py::CapabilityResolver._evaluate`: compatibility now
+   requires every *required* field in the descriptor's `input_schema` to be a subset of the
+   step's `required_inputs`, not the other direction. Covered by
+   `tests/test_capability_resolver.py::test_extra_required_input_the_step_cannot_supply_is_rejected`.
+2. **A real Claude intent-analysis call produced non-canonical names** (`retrieve_savings_balance`
+   instead of `retrieve_account_balance`; `member_id`/`account_type`/`savings_balance` instead of
+   `memberId`/`accountType`/`savingsBalance`), which caused the planner to fall through to its
+   generic template and the resolver to correctly reject the real artifact as input/output
+   incompatible — which then triggered a real discovery fallback that **re-saved the approved
+   production artifact `lookup-member-savings-balance.v1.json` as a fresh draft**, via
+   `ClaudeDiscoveryAgent`'s existing (pre-existing, not new) id-collision behavior when no
+   `system_identifier` disambiguates it. Caught immediately via `git status`/`git diff` on
+   `artifacts/`; the file was restored with `git checkout` before anything else touched it — no
+   data was lost, but it is a real reminder that a resolver relying on exact-name matching is
+   only as safe as its naming discipline. Fixed at the root cause: `agent/prompts/intent_v1.py`'s
+   system prompt now gives Claude an explicit naming convention (lowerCamelCase entities/outputs,
+   the specific canonical `retrieve_account_balance` intent id for any account-balance question)
+   plus a worked example, mirroring the same technique (explicit worked examples in the prompt)
+   that fixed the `role`/`name` locator-field-swap bug back in Phase 4. Re-verified against a
+   real, live Anthropic call afterward (see below) — not just against the mock provider.
+
+**Tests added (all in the default, non-`e2e` suite — deterministic, `MockLLMProvider`-driven,
+no network call except the live end-to-end verification below):** `tests/conftest.py`
+(`seeded_capability_registry` / `mock_intent_provider_factory` fixtures — a deliberate, minimal,
+documented deviation from this repo's no-conftest convention), `test_intent_analyzer.py`,
+`test_llm_mock_provider.py`, `test_planner.py`, `test_plan_validator.py`,
+`test_capability_resolver.py`, `test_orchestrator.py`, `test_synthesis_grounded.py`, plus the one
+new case in `test_replay_e2e.py` above. Full suite: **`uv run pytest -q -m "not e2e"` →
+132 passed, 21 deselected** (up from 91 passed at the start of this phase — 41 new tests, zero
+regressions). **`uv run ruff check .` → All checks passed.**
+
+**Live end-to-end verification (real Anthropic call, real Playwright replay, not mocked):**
+```
+uv run uvicorn demo_app.app:app --port 8001 &
+HEADLESS=true uv run capability-platform run --goal "Get the savings balance for member 10002"
+```
+Real result: `intent.intent == "retrieve_account_balance"`, `intent.entity("memberId") ==
+"10002"`, `intent.entity("accountType") == "savings"`, `plan.steps[0].required_inputs ==
+["memberId"]`, `resolutions[0].resolution_type == "computer_use_capability"` selecting
+`lookup-member-savings-balance.v1`, `execution[0].status == "success"`, **`result.outputs ==
+{"savingsBalance": 1220.0}`**. Evidence for the orchestrator's own run
+(`evidence/runs/c4785166-114f-4a24-a587-bd2a75ad3282/events.jsonl`): `intent.analyzed →
+plan.created → plan.validated → capability.candidates_retrieved → capability.selected →
+capability.executed → result.aggregated → result.synthesized` — **no** `discovery.fallback_started`
+event, proving no new discovery run occurred. The nested real `ReplayEngine` run it triggered
+(`evidence/runs/6fe9189e-a287-4aac-b86d-8fc93491cd6e/events.jsonl`) independently shows
+`replay.started → step.started/step.completed ×5 → replay.completed → replay.finished`, proving
+the *real* replay engine executed, not a stub.
+
+**Deliberately not done in this phase** (per explicit user instruction — "implement only Phase
+2... stop for review"): no README.md/REPORT.md rewrite, no live verification of example 2
+(computer-use discovery fallback) or example 3 (multi-step plan) beyond their deterministic unit
+tests (`test_orchestrator.py::test_unresolved_step_falls_back_to_real_discovery_agent`,
+`test_planner.py::test_multi_step_plan_preserves_dependencies`) — running example 2 live would
+cost a second real discovery run and, given the id-collision behavior found above, needs a
+non-default `system_identifier` in `context` to avoid touching `lookup-member-savings-balance.v1`
+again; flagged for the next phase rather than risked here. No mega-prompt-scope work (Sections
+5-21 from the earlier, larger specification) was started, per the Phase 1 assessment's
+recommendation and the user's approval of the PDF/stretch-goal-scoped path only.

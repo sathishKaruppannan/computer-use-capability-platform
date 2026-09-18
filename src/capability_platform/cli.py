@@ -5,7 +5,13 @@ import json
 from capability_platform.access.credentials import hash_password
 from capability_platform.access.models import ClientCredential
 from capability_platform.models import ServiceType
-from capability_platform.runtime import credential_store, discovery_agent, replay_engine, store
+from capability_platform.runtime import (
+    agent_orchestrator,
+    credential_store,
+    discovery_agent,
+    replay_engine,
+    store,
+)
 from capability_platform.settings import settings
 from capability_platform.synthesis.result import GroundedSynthesizer
 
@@ -37,6 +43,22 @@ async def run(args) -> None:
                 indent=2,
             )
         )
+    elif args.command == "plan":
+        intent, plan, resolutions = await agent_orchestrator().plan_only(args.goal, parse_inputs(args.context))
+        print(
+            json.dumps(
+                {
+                    "intent": intent.model_dump(mode="json"),
+                    "plan": plan.model_dump(mode="json"),
+                    "resolutions": [r.model_dump(mode="json") for r in resolutions],
+                },
+                indent=2,
+            )
+        )
+    elif args.command == "run":
+        result = await agent_orchestrator().execute_goal(args.goal, parse_inputs(args.context))
+        print(result.model_dump_json(indent=2))
+        print(result.synthesized_text)
     elif args.command == "register-client":
         password_hash, password_salt = hash_password(args.password)
         credential = ClientCredential(
@@ -60,6 +82,12 @@ def main() -> None:
     replay = commands.add_parser("replay")
     replay.add_argument("capability")
     replay.add_argument("--input", action="append", default=[])
+    plan_cmd = commands.add_parser("plan")
+    plan_cmd.add_argument("--goal", required=True)
+    plan_cmd.add_argument("--context", action="append", default=[])
+    run_cmd = commands.add_parser("run")
+    run_cmd.add_argument("--goal", required=True)
+    run_cmd.add_argument("--context", action="append", default=[])
     commands.add_parser("list")
     approve = commands.add_parser("approve")
     approve.add_argument("capability")
