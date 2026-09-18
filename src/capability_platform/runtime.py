@@ -10,8 +10,13 @@ from capability_platform.agent.models import CapabilityResolution
 from capability_platform.agent.orchestrator import AgentOrchestrator
 from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
+from capability_platform.capabilities.embeddings import cached_embedding_fn, openai_embedding_fn
 from capability_platform.capabilities.executor import CapabilityExecutor
-from capability_platform.capabilities.registry import CapabilityRegistry, build_registry
+from capability_platform.capabilities.registry import (
+    CapabilityRegistry,
+    EmbeddingFn,
+    build_registry,
+)
 from capability_platform.capabilities.resolver import CapabilityResolver
 from capability_platform.capabilities.store import ArtifactStore
 from capability_platform.computer_use.replay import ReplayEngine
@@ -74,8 +79,30 @@ def intent_llm_fallback_provider() -> LLMProvider | None:
     return OpenAIProvider(settings.openai_api_key, settings.openai_model)
 
 
+# Module-level, not per-call: capability_registry() rebuilds CapabilityRegistry from scratch on
+# every request (no registry-level caching), so this cache has to outlive any single call to
+# actually avoid re-embedding the same unchanged capability content on every request -- a cache
+# constructed fresh inside capability_registry() would provide zero benefit across requests.
+_capability_embedding_cache: dict[str, list[float]] = {}
+
+
+def capability_embed_fn() -> EmbeddingFn | None:
+    """None means "use build_registry()'s own default (the hashing trick)" -- only set to a real
+    provider when OPENAI_API_KEY is configured. Opt-in upgrade, not a default swap, same
+    convention as intent_llm_fallback_provider() above."""
+    if not settings.openai_api_key:
+        return None
+    return cached_embedding_fn(
+        openai_embedding_fn(settings.openai_api_key, settings.openai_embedding_model),
+        cache=_capability_embedding_cache,
+    )
+
+
 def capability_registry() -> CapabilityRegistry:
-    return build_registry(store())
+    embed_fn = capability_embed_fn()
+    if embed_fn is None:
+        return build_registry(store())
+    return build_registry(store(), embed_fn=embed_fn)
 
 
 def capability_resolver() -> CapabilityResolver:

@@ -1938,3 +1938,69 @@ trade-off" alongside the code.
 uv run pytest -q -m "not e2e"   →  213 passed, 21 deselected   (up from 211 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 17 log — real, opt-in embeddings + why not a vector DB
+
+Follow-up to Phase 16's placeholder: the user asked to actually wire a real embedding provider
+in, plus asked directly about a vector database. Answered the vector DB question first (a vector
+DB solves persistent storage and approximate-nearest-neighbor search at scale -- neither is a real
+constraint at ~6 capabilities, where a brute-force cosine scan is microseconds; the real cost a
+network-calling provider introduces is re-embedding unchanged text on every request, since
+`capability_registry()` has no registry-level caching -- a plain content-hash cache is the
+right-sized fix for that, not a database), then built exactly that.
+
+**New `capabilities/embeddings.py`**: `openai_embedding_fn(api_key, model)` wraps OpenAI's
+embeddings endpoint as an `EmbeddingFn` -- deliberately the SYNC `OpenAI` client, not
+`AsyncOpenAI`: `CapabilityRegistry`'s `embed_fn` contract is a plain sync callable, and this runs
+from inside code already executing on a running event loop (a FastAPI request handler), so
+`asyncio.run()` would raise. `cached_embedding_fn(embed_fn, cache=None)` wraps any `EmbeddingFn`
+with a content-hash-keyed cache.
+
+**`runtime.py`**: a module-level `_capability_embedding_cache` dict (not one built fresh inside a
+factory -- `capability_registry()` rebuilds `CapabilityRegistry` from scratch on every call, so a
+cache scoped to that call would never survive across requests and provide zero benefit; this one
+does, on purpose). `capability_embed_fn()` returns `None` (falls through to `build_registry()`'s
+own hashing-trick default) unless `OPENAI_API_KEY` is set, in which case it returns the cached,
+real provider -- same opt-in convention already used for the discovery fallback provider. New
+`Settings.openai_embedding_model` (default `text-embedding-3-small`), reusing the existing
+`OPENAI_API_KEY`.
+
+**Live-verified with a real OpenAI key**, and the comparison actually shows the difference, not
+just asserts it exists: for the goal *"How much money does the account holder currently have on
+deposit?"* against the real approved catalog plus one synthetic distractor
+(`create-servicing-note`, tagged `note`/`comment`/`record` -- zero literal token overlap with the
+goal, same as the real balance capabilities):
+
+```
+Hashing trick (default):                    Real OpenAI embeddings:
+0.5098  create-servicing-note        <-- top  0.6620  member-financial-summary
+0.4971  lookup-savings-balance...            0.6467  lookup-savings-balance...
+0.4971  lookup-member-savings-balance.v1     0.6467  lookup-member-savings-balance.v1
+0.4700  ...-approval-demo.v1                 0.6307  ...-approval-demo.v1
+0.4500  ...-pause-demo.v1                    0.6223  ...-pause-demo.v1
+0.4500  member-financial-summary             0.5522  create-servicing-note  <-- last
+```
+
+The hashing trick ranks the completely unrelated note-creation tool #1 -- a real, concrete
+misranking, not a hypothetical one -- while real embeddings correctly rank it dead last. (In the
+full resolver pipeline this specific miss wouldn't cause a wrong *execution*, since input/output
+compatibility filtering in `resolver.py::_evaluate()` would still reject `create-servicing-note`
+for lacking a `savingsBalance` output -- this demonstrates the raw retrieval-quality gap
+specifically, the honest scope of what this upgrade actually fixes.)
+
+New tests: `test_capability_embeddings.py` (both functions against fakes -- no live call),
+`test_runtime_embeddings.py` (the `None`-vs-wired conditional, and that the module-level cache is
+genuinely shared across two separate calls to `capability_embed_fn()`, the actual point of scoping
+it at module level rather than inside the factory). The live comparison above is documented
+evidence, not an automated test -- this codebase's existing convention keeps the default suite
+(`pytest -q -m "not e2e"`) free of any real network call, `e2e` is scoped specifically to
+Playwright/browser tests, and a live-embeddings assertion would need a third category this
+project doesn't otherwise have; adding one for a single demo comparison wasn't worth the new
+convention.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  221 passed, 21 deselected   (up from 213 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
