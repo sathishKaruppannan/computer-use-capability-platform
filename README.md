@@ -31,7 +31,9 @@ flowchart TD
 
   G["Goal + service_type + system_identifier"] --> R["Reuse check<br/>(exact key)"]
   R -->|"approved match for this (service_type, system_identifier)"| X[Reuse existing capability]
-  R -->|no match| D[Claude discovery]
+  R -->|no match| CR
+  CR -->|"match for this base_url, any service_type"| X
+  CR -->|no match| D
   D --> S[Surface adapter]
   D --> C[Artifact compiler]
   C --> N["Save as draft"]
@@ -47,12 +49,17 @@ flowchart TD
 
 CLI, REST, and MCP are three interface *options* onto the same core, not three separate
 implementations — `list_capabilities` (REST `/capabilities`, MCP) and every execute/replay path
-converge on the same `ArtifactStore`/`ReplayEngine`. Two independent resolution paths exist and
-both fall through to the same Claude discovery / deterministic executor:
-`capability-platform plan`/`run` and `POST /agent/plan`/`/agent/execute` route a free-text goal
-through the semantic `CapabilityResolver` (`agent/orchestrator.py`, per plan step — see "Goal →
-capability resolution" below); `POST /v1/discover` uses a separate, older exact-key reuse check
-(`(service_type, system_identifier)`) that predates it and is unchanged.
+converge on the same `ArtifactStore`/`ReplayEngine`. `capability-platform plan`/`run` and
+`POST /agent/plan`/`/agent/execute` route a free-text goal through the semantic
+`CapabilityResolver` (`agent/orchestrator.py`, per plan step — see "Goal → capability resolution"
+below); `POST /v1/discover` keeps its own, older exact-key reuse check
+(`(service_type, system_identifier)`) as its first, fastest check, but now also tries the same
+semantic resolver — scoped to the request's resolved `base_url` — before falling through to fresh
+discovery, so a capability discovered via *any* path (plain CLI `discover`, `/agent/execute`'s
+own fallback, or `/v1/discover` itself) can be reused from `/v1/discover` too, not just ones it
+originally discovered itself. See `TASKS.md` (Phase 11) for the real run that proves this: a
+`/v1/discover` call with a brand-new `system_identifier` still found and reused the real
+`lookup-member-savings-balance.v1` capability, with zero fresh discovery.
 
 **What's actually wired up today, precisely:** `POST /v1/discover` is the live, goal-routed
 resolver — `discover_v1` (`src/capability_platform/api/v1_routes.py`) calls
