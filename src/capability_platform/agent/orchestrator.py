@@ -28,7 +28,7 @@ from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
 from capability_platform.capabilities.executor import CapabilityExecutor
 from capability_platform.capabilities.resolver import CapabilityResolver
-from capability_platform.capabilities.store import ArtifactStore
+from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES, ArtifactStore
 from capability_platform.models import (
     CapabilityArtifact,
     ErrorCategory,
@@ -64,6 +64,7 @@ class AgentOrchestrator:
         artifact_store: ArtifactStore,
         discovery_agent_factory: Callable[[], _DiscoveryAgent],
         evidence_root: Path,
+        resolution_authorizer: Callable[[CapabilityResolution], None] | None = None,
     ) -> None:
         self.intent_analyzer = intent_analyzer
         self.planner = planner
@@ -73,6 +74,12 @@ class AgentOrchestrator:
         self.artifact_store = artifact_store
         self.discovery_agent_factory = discovery_agent_factory
         self.evidence_root = evidence_root
+        # Optional pre-execution authorization gate, called with each step's CapabilityResolution
+        # right before it would be executed -- raise PermissionError to deny it. Lets a caller
+        # (e.g. the REST layer, which knows the authenticated credential) enforce per-capability
+        # scoping (such as require_service_type) without the orchestrator needing to know
+        # anything about credentials or auth itself.
+        self.resolution_authorizer = resolution_authorizer
 
     async def execute_goal(self, goal: str, context: dict[str, Any] | None = None) -> AgentResult:
         context = context or {}
@@ -98,6 +105,19 @@ class AgentOrchestrator:
                         category=ErrorCategory.INTERNAL,
                         code="UNRESOLVED_CAPABILITY",
                         message=resolution.reason,
+                        step_id=step.id,
+                        recoverable=False,
+                    ),
+                )
+            elif (denial := self._authorization_denial(resolution)) is not None:
+                result = CapabilityExecutionResult(
+                    step_id=step.id,
+                    descriptor_id=resolution.selected.descriptor.id if resolution.selected else "",
+                    status=RunStatus.FAILURE,
+                    error=RunError(
+                        category=ErrorCategory.POLICY,
+                        code="SERVICE_TYPE_NOT_AUTHORIZED",
+                        message=denial,
                         step_id=step.id,
                         recoverable=False,
                     ),
@@ -229,6 +249,38 @@ class AgentOrchestrator:
             member_id,
             system_identifier=context.get("system_identifier"),
         )
+
+        # Safety guard: ClaudeDiscoveryAgent's own artifact-id derivation can collide with an
+        # already-approved capability's id (observed for real during Phase 8 -- a resolver miss
+        # on a savings-balance-shaped goal triggered discovery, which then silently re-saved
+        # lookup-member-savings-balance.v1 as a fresh draft). Never overwrite an
+        # already-approved/active capability's id unless the caller explicitly opts in via
+        # context={"force_rediscover": True} -- the same explicit-opt-in convention /v1/discover
+        # already uses for intentional re-recording.
+        existing = self._load_existing_artifact(artifact.qualified_id)
+        if (
+            existing is not None
+            and existing.lifecycle in AGENT_EXPOSABLE_LIFECYCLES
+            and not context.get("force_rediscover", False)
+        ):
+            return CapabilityExecutionResult(
+                step_id=step.id,
+                descriptor_id=artifact.qualified_id,
+                status=RunStatus.FAILURE,
+                error=RunError(
+                    category=ErrorCategory.INTERNAL,
+                    code="DISCOVERY_ID_COLLISION",
+                    message=(
+                        f"A newly discovered artifact would overwrite the already-"
+                        f"{existing.lifecycle} capability '{artifact.qualified_id}'. Pass "
+                        "context={'force_rediscover': True} to intentionally re-record it, or "
+                        "supply a distinct system_identifier so discovery derives a different id."
+                    ),
+                    step_id=step.id,
+                    recoverable=False,
+                ),
+            )
+
         # A freshly discovered artifact stays a draft -- identical to today's /v1/discover
         # behavior. The orchestrator never auto-approves it; approval gating is unchanged.
         self.artifact_store.save(artifact)
@@ -238,6 +290,25 @@ class AgentOrchestrator:
             status=RunStatus.PAUSED,
             raw_execution_result={"artifact_id": artifact.qualified_id, "lifecycle": artifact.lifecycle},
         )
+
+    def _authorization_denial(self, resolution: CapabilityResolution) -> str | None:
+        """None means allowed (no authorizer configured, or it raised nothing); a string is the
+        denial reason. Only meaningful for resolutions the executor would otherwise run."""
+        if self.resolution_authorizer is None:
+            return None
+        if resolution.resolution_type in (ResolutionType.COMPUTER_USE_DISCOVERY, ResolutionType.UNRESOLVED):
+            return None
+        try:
+            self.resolution_authorizer(resolution)
+        except PermissionError as exc:
+            return str(exc)
+        return None
+
+    def _load_existing_artifact(self, qualified_id: str) -> CapabilityArtifact | None:
+        try:
+            return self.artifact_store.load(qualified_id)
+        except FileNotFoundError:
+            return None
 
     @staticmethod
     def _collect_inputs(step: PlanStep, intent: TaskIntent, context: dict[str, Any]) -> dict[str, Any]:

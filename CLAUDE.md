@@ -13,6 +13,8 @@ Read `README.md` and `REPORT.md` first. Preserve the core invariant:
 - Platform API: `uv run uvicorn capability_platform.api.app:app --port 8000`
 - Discover: `uv run capability-platform discover --goal "Find member 10001 and return savings balance"`
 - Replay: `uv run capability-platform replay lookup-member-savings-balance.v1 --input memberId=10002`
+- Plan (resolve only, nothing executes): `uv run capability-platform plan --goal "Get the savings balance for member 10002"`
+- Run (resolve and execute): `uv run capability-platform run --goal "Get the savings balance for member 10002"`
 
 ## Architecture rules
 
@@ -24,6 +26,11 @@ Read `README.md` and `REPORT.md` first. Preserve the core invariant:
 6. Business outcomes, recoverable conditions, and hard failures remain distinct.
 7. Risky actions require approval. Do not weaken this for demo convenience.
 8. Surface-specific behavior stays behind `SurfaceAdapter`.
+9. A natural-language goal (`capability-platform plan`/`run`, `POST /agent/plan`/`/agent/execute`)
+   routes through `AgentOrchestrator`'s Intent Analyzer → Planner → PlanValidator →
+   CapabilityResolver pipeline before any computer-use discovery is triggered. Only fall back to
+   `ClaudeDiscoveryAgent` when the resolver finds no approved deterministic capability for a step.
+   Do not send every goal straight to the browser agent.
 
 When adding a capability source, normalize it into `CapabilityDescriptor` and register an
 executor adapter. Do not add source-specific branches to the planner.

@@ -1,8 +1,11 @@
+from collections.abc import Callable
+
 from capability_platform.access.credentials import JSONCredentialStore
 from capability_platform.access.system_registry import JSONSystemRegistry
 from capability_platform.access.tracking import JSONInquiryTracker
 from capability_platform.agent.discovery import ClaudeDiscoveryAgent
 from capability_platform.agent.intent_analyzer import IntentAnalyzer
+from capability_platform.agent.models import CapabilityResolution
 from capability_platform.agent.orchestrator import AgentOrchestrator
 from capability_platform.agent.plan_validator import PlanValidator
 from capability_platform.agent.planner import Planner
@@ -78,7 +81,10 @@ def capability_executor() -> CapabilityExecutor:
     return CapabilityExecutor(store(), replay_engine)
 
 
-def agent_orchestrator(environment: str = "production") -> AgentOrchestrator:
+def agent_orchestrator(
+    environment: str = "production",
+    resolution_authorizer: Callable[[CapabilityResolution], None] | None = None,
+) -> AgentOrchestrator:
     return AgentOrchestrator(
         intent_analyzer=IntentAnalyzer(intent_llm_provider(), intent_llm_fallback_provider()),
         planner=Planner(),
@@ -88,4 +94,5 @@ def agent_orchestrator(environment: str = "production") -> AgentOrchestrator:
         artifact_store=store(),
         discovery_agent_factory=lambda: discovery_agent(environment=environment),
         evidence_root=settings.evidence_dir,
+        resolution_authorizer=resolution_authorizer,
     )

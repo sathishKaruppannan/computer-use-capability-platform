@@ -356,3 +356,10 @@ class CapabilityDescriptor(BaseModel):
     trust: Literal["discovered", "verified", "approved", "restricted", "blocked"] = "approved"
     reliability: float = 1.0
     tags: list[str] = Field(default_factory=list)
+    service_type: ServiceType | None = Field(
+        default=None,
+        description="Authorization scope this capability requires, when known (e.g. carried "
+        "over from a computer_use artifact's own service_type). None means no service_type "
+        "scoping applies to this capability -- an authenticated caller may invoke it regardless "
+        "of authorized_service_types.",
+    )

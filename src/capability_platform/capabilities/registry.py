@@ -83,6 +83,7 @@ def _descriptor_from_artifact(artifact: CapabilityArtifact) -> CapabilityDescrip
         trust="approved",
         reliability=1.0,
         tags=artifact.tags,
+        service_type=artifact.service_type,
     )
 
 
