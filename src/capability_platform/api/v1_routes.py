@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from capability_platform.access.models import ClientCredential, InquiryRecord
 from capability_platform.access.system_registry import SystemNotRegisteredError
+from capability_platform.agent.models import ResolutionType
 from capability_platform.api.auth import authenticate_client, require_service_type
 from capability_platform.api.schemas.requests import DiscoverV1Request, ExecuteV1Request
 from capability_platform.api.schemas.responses import (
@@ -17,8 +18,9 @@ from capability_platform.api.schemas.responses import (
     SystemSummary,
 )
 from capability_platform.capabilities.store import AGENT_EXPOSABLE_LIFECYCLES
-from capability_platform.models import ExecutionResult, RunStatus
+from capability_platform.models import CapabilityArtifact, ExecutionResult, RunStatus
 from capability_platform.runtime import (
+    agent_orchestrator,
     discovery_agent,
     inquiry_tracker,
     replay_engine,
@@ -27,6 +29,48 @@ from capability_platform.runtime import (
 )
 
 router = APIRouter(prefix="/v1", tags=["v1"])
+
+
+async def _find_semantic_reuse(goal: str, base_url: str) -> CapabilityArtifact | None:
+    """Second-chance reuse check, tried after the exact-key (service_type, system_identifier)
+    match misses and before running fresh discovery: does an approved capability already exist
+    for this exact target application (base_url) that the semantic resolver considers a match
+    for this goal, even though it was registered under a different service_type/system_identifier
+    (or none at all -- e.g. one discovered via the plain `discover` CLI command or via
+    /agent/execute's own discovery fallback, neither of which stamps those fields)?
+
+    Filters by base_url rather than system_identifier deliberately: system_identifier is only
+    ever stamped by this exact endpoint, so filtering by it would never find anything the
+    exact-key check hadn't already found. base_url is set on every artifact regardless of how it
+    was discovered, and is what actually matters for target-system safety -- reusing a capability
+    only because its base_url matches the resolved target for *this* request, never across
+    different target applications.
+
+    Never lets a failure here (missing LLM credentials, a transient provider error, anything)
+    block the existing discovery fallback -- any exception just means "no semantic match found",
+    identical to today's behavior with this check absent entirely."""
+    try:
+        orchestrator = agent_orchestrator()
+        _, _, resolutions = await orchestrator.plan_only(
+            goal, context={"target_url": base_url, "allow_discovery": False}
+        )
+    except Exception:  # noqa: BLE001 - deliberately broad: any failure here degrades to "no
+        # semantic match found", identical to this check being absent entirely -- it must never
+        # block the existing, proven discovery fallback below.
+        return None
+    for resolution in resolutions:
+        if resolution.resolution_type != ResolutionType.COMPUTER_USE_CAPABILITY or not resolution.selected:
+            continue
+        descriptor = resolution.selected.descriptor
+        if descriptor.source != "computer_use":
+            continue
+        try:
+            artifact = store().load(descriptor.id)
+        except FileNotFoundError:
+            continue
+        if artifact.application.base_url == base_url:
+            return artifact
+    return None
 
 
 @router.post("/discover", response_model=DiscoverV1Response)
@@ -78,6 +122,30 @@ async def discover_v1(
                 400, f"Unknown system_identifier: {request.system_identifier}"
             ) from exc
         base_url = system_entry.base_url
+
+    if not request.force_rediscover:
+        semantic_match = await _find_semantic_reuse(request.goal, base_url)
+        if semantic_match is not None:
+            inquiry_tracker().record(
+                InquiryRecord(
+                    inquiry_id=inquiry_id,
+                    client_inquiry_id=request.client_inquiry_id,
+                    client_id=credential.client_id,
+                    goal=request.goal,
+                    service_type=request.service_type,
+                    system_identifier=request.system_identifier,
+                    capability_id=semantic_match.qualified_id,
+                    reused_existing_capability=True,
+                    environment=request.environment,
+                )
+            )
+            return DiscoverV1Response(
+                capability_id=semantic_match.qualified_id,
+                inquiry_id=inquiry_id,
+                reused_existing_capability=True,
+                lifecycle=semantic_match.lifecycle,
+                approval_required=semantic_match.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES,
+            )
 
     extra_known_values: dict[str, str] | None = None
     if request.is_auth_required:

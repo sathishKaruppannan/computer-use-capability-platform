@@ -9,20 +9,54 @@ from fastapi.testclient import TestClient
 from capability_platform.access.credentials import JSONCredentialStore, hash_password
 from capability_platform.access.models import ClientCredential, InquiryRecord
 from capability_platform.access.tracking import JSONInquiryTracker
+from capability_platform.agent.models import (
+    CapabilityCandidate,
+    CapabilityResolution,
+    ResolutionType,
+)
 from capability_platform.api import app as app_module
 from capability_platform.api import v1_routes as v1_routes_module
 from capability_platform.capabilities.store import ArtifactStore
 from capability_platform.models import (
     ApplicationBinding,
     CapabilityArtifact,
+    CapabilityDescriptor,
     Checkpoint,
     Locator,
     OutputSpec,
     ParameterSpec,
+    RiskLevel,
     ServiceType,
     Target,
 )
 from capability_platform.settings import settings as global_settings
+
+
+def _computer_use_resolution(descriptor_id: str, step_id: str = "step-1") -> CapabilityResolution:
+    descriptor = CapabilityDescriptor(
+        id=descriptor_id,
+        name="Semantic candidate",
+        description="test",
+        source="computer_use",
+        input_schema={},
+        output_schema={},
+        risk=RiskLevel.READ_ONLY,
+        trust="approved",
+    )
+    candidate = CapabilityCandidate(
+        descriptor=descriptor,
+        semantic_score=0.9,
+        input_compatible=True,
+        output_compatible=True,
+        trust_ok=True,
+        policy_ok=True,
+        tenant_ok=True,
+        reliability=1.0,
+        final_score=0.9,
+    )
+    return CapabilityResolution(
+        step_id=step_id, resolution_type=ResolutionType.COMPUTER_USE_CAPABILITY, selected=candidate, reason="matched"
+    )
 
 
 def _artifact(id_: str, lifecycle: str, service_type=None, system_identifier=None) -> CapabilityArtifact:
@@ -81,6 +115,26 @@ def _configure(monkeypatch, tmp_path):
     monkeypatch.setattr(global_settings, "credential_dir", tmp_path / "credentials")
     monkeypatch.setattr(global_settings, "tracking_dir", tmp_path / "tracking")
     monkeypatch.setattr(global_settings, "system_registry_path", tmp_path / "system_registry.json")
+    # Defense in depth: a real (unmocked) discovery/intent-analysis call reaching this point would
+    # otherwise write real evidence into the actual evidence/ directory even though every other
+    # piece of state is isolated to tmp_path -- found the hard way when _find_semantic_reuse's
+    # agent_orchestrator() call did exactly that before the mocks below existed.
+    monkeypatch.setattr(global_settings, "evidence_dir", tmp_path / "evidence")
+
+
+def _no_semantic_match(monkeypatch):
+    """discover_v1 now tries a semantic-reuse check (agent_orchestrator().plan_only(...)) before
+    falling through to discovery. Without this, any test reaching that branch would construct a
+    REAL AnthropicProvider (this dev environment has a real ANTHROPIC_API_KEY configured) and
+    make a live network call -- turning a fast, offline unit test into a slow, non-deterministic,
+    networked one. Force it to report "no match" instantly, same as an absent/misconfigured
+    provider would in CI."""
+
+    class _NoSemanticMatchOrchestrator:
+        async def plan_only(self, goal, context=None):
+            raise RuntimeError("no semantic match in this test")
+
+    monkeypatch.setattr(v1_routes_module, "agent_orchestrator", lambda: _NoSemanticMatchOrchestrator())
 
 
 def test_discover_v1_requires_authentication(monkeypatch, tmp_path):
@@ -228,6 +282,7 @@ def test_discover_v1_runs_discovery_and_saves_new_capability_when_no_reuse_match
         return _FakeAgent()
 
     monkeypatch.setattr(v1_routes_module, "discovery_agent", _fake_discovery_agent)
+    _no_semantic_match(monkeypatch)
 
     client = TestClient(app_module.app)
     response = client.post(
@@ -262,6 +317,7 @@ def test_discover_v1_is_auth_required_without_credentials_returns_400(monkeypatc
     _configure(monkeypatch, tmp_path)
     _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
     _write_system_registry()
+    _no_semantic_match(monkeypatch)
     client = TestClient(app_module.app)
 
     response = client.post(
@@ -295,6 +351,7 @@ def test_discover_v1_passes_extra_known_values_when_auth_required(monkeypatch, t
             return fake_artifact
 
     monkeypatch.setattr(v1_routes_module, "discovery_agent", lambda environment="production": _FakeAgent())
+    _no_semantic_match(monkeypatch)
 
     client = TestClient(app_module.app)
     response = client.post(
@@ -318,6 +375,7 @@ def test_discover_v1_api_key_auth_without_key_returns_400(monkeypatch, tmp_path)
     _configure(monkeypatch, tmp_path)
     _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
     _write_system_registry()
+    _no_semantic_match(monkeypatch)
     client = TestClient(app_module.app)
 
     response = client.post(
@@ -352,6 +410,7 @@ def test_discover_v1_passes_api_key_as_extra_known_values(monkeypatch, tmp_path)
             return fake_artifact
 
     monkeypatch.setattr(v1_routes_module, "discovery_agent", lambda environment="production": _FakeAgent())
+    _no_semantic_match(monkeypatch)
 
     client = TestClient(app_module.app)
     response = client.post(
@@ -432,6 +491,7 @@ def test_discover_v1_target_url_bypasses_registry(monkeypatch, tmp_path):
             return fake_artifact
 
     monkeypatch.setattr(v1_routes_module, "discovery_agent", lambda environment="production": _FakeAgent())
+    _no_semantic_match(monkeypatch)
 
     client = TestClient(app_module.app)
     response = client.post(
@@ -465,6 +525,7 @@ def test_discover_v1_passes_discovery_run_id_through(monkeypatch, tmp_path):
             return fake_artifact
 
     monkeypatch.setattr(v1_routes_module, "discovery_agent", lambda environment="production": _FakeAgent())
+    _no_semantic_match(monkeypatch)
 
     client = TestClient(app_module.app)
     response = client.post(
@@ -624,3 +685,142 @@ def test_review_v1_includes_goal_and_requester(monkeypatch, tmp_path):
     assert len(body["requested_by"]) == 1
     assert body["requested_by"][0]["client_id"] == "requesting-client"
     assert body["requested_by"][0]["goal"] == "Look up a member's savings balance"
+
+
+async def test_find_semantic_reuse_returns_artifact_when_base_url_matches(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("semantic-cap", "approved"))
+    resolution = _computer_use_resolution("semantic-cap.v1")
+
+    class _FakeOrchestrator:
+        async def plan_only(self, goal, context=None):
+            return None, None, [resolution]
+
+    monkeypatch.setattr(v1_routes_module, "agent_orchestrator", lambda: _FakeOrchestrator())
+
+    found = await v1_routes_module._find_semantic_reuse(
+        "Get the savings balance for member 10002", "http://127.0.0.1:8001"
+    )
+    assert found is not None
+    assert found.qualified_id == "semantic-cap.v1"
+
+
+async def test_find_semantic_reuse_filters_out_a_different_target_application(monkeypatch, tmp_path):
+    """Tenant/target-isolation safety: a semantic match on goal text alone is not enough --
+    the matched capability's own base_url must equal the resolved target for THIS request."""
+    _configure(monkeypatch, tmp_path)
+    other_app = _artifact("other-app-cap", "approved")
+    other_app.application.base_url = "http://127.0.0.1:9999"
+    ArtifactStore(global_settings.artifact_dir).save(other_app)
+    resolution = _computer_use_resolution("other-app-cap.v1")
+
+    class _FakeOrchestrator:
+        async def plan_only(self, goal, context=None):
+            return None, None, [resolution]
+
+    monkeypatch.setattr(v1_routes_module, "agent_orchestrator", lambda: _FakeOrchestrator())
+
+    found = await v1_routes_module._find_semantic_reuse("goal", "http://127.0.0.1:8001")
+    assert found is None
+
+
+async def test_find_semantic_reuse_returns_none_on_any_resolver_error(monkeypatch, tmp_path):
+    """Never lets a failure here (missing credentials, a transient provider error, anything)
+    block the existing, proven discovery fallback."""
+    _configure(monkeypatch, tmp_path)
+
+    class _RaisingOrchestrator:
+        async def plan_only(self, goal, context=None):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(v1_routes_module, "agent_orchestrator", lambda: _RaisingOrchestrator())
+
+    found = await v1_routes_module._find_semantic_reuse("goal", "http://127.0.0.1:8001")
+    assert found is None
+
+
+def test_discover_v1_reuses_capability_via_semantic_match_when_exact_key_misses(monkeypatch, tmp_path):
+    """The actual point of unifying the two resolution paths: a capability discovered OUTSIDE
+    /v1/discover's own flow (e.g. via the plain `discover` CLI command, or via /agent/execute's
+    own discovery fallback -- neither of which stamps service_type/system_identifier) can now be
+    reused here too, via base_url + semantic goal match, instead of triggering redundant fresh
+    discovery just because the exact-key pair was never registered."""
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _write_system_registry()
+    # service_type/system_identifier=None -- exactly what a capability discovered outside
+    # /v1/discover's own flow looks like.
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("outside-cap", "approved"))
+    resolution = _computer_use_resolution("outside-cap.v1")
+
+    class _FakeOrchestrator:
+        async def plan_only(self, goal, context=None):
+            return None, None, [resolution]
+
+    monkeypatch.setattr(v1_routes_module, "agent_orchestrator", lambda: _FakeOrchestrator())
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("discovery_agent() must not be called when a semantic match is found")
+
+    monkeypatch.setattr(v1_routes_module, "discovery_agent", _fail_if_called)
+
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/v1/discover",
+        json={
+            "service_type": "member_savings_balance_lookup",
+            "system_identifier": "legacy-member-servicing-demo",
+            "client_inquiry_id": "client-req-semantic-1",
+            "goal": "Find member 10002 and return savings balance",
+        },
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reused_existing_capability"] is True
+    assert body["capability_id"] == "outside-cap.v1"
+
+    tracked = JSONInquiryTracker(global_settings.tracking_dir).get(body["inquiry_id"])
+    assert tracked is not None
+    assert tracked.reused_existing_capability is True
+
+
+def test_discover_v1_force_rediscover_also_skips_semantic_match(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    _register_client("demo-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP])
+    _write_system_registry()
+    ArtifactStore(global_settings.artifact_dir).save(_artifact("would-match-cap", "approved"))
+
+    def _fail_if_called(goal, context=None):
+        raise AssertionError("semantic match must not be attempted when force_rediscover=True")
+
+    class _FailingOrchestrator:
+        async def plan_only(self, goal, context=None):
+            _fail_if_called(goal, context)
+
+    monkeypatch.setattr(v1_routes_module, "agent_orchestrator", lambda: _FailingOrchestrator())
+
+    fresh_artifact = _artifact("would-match-cap", "draft")
+
+    class _FakeAgent:
+        async def discover(
+            self, goal, target_url, member_id, extra_known_values=None, system_identifier=None, run_id=None
+        ):
+            return fresh_artifact
+
+    monkeypatch.setattr(v1_routes_module, "discovery_agent", lambda environment="production": _FakeAgent())
+
+    client = TestClient(app_module.app)
+    response = client.post(
+        "/v1/discover",
+        json={
+            "service_type": "member_savings_balance_lookup",
+            "system_identifier": "legacy-member-servicing-demo",
+            "client_inquiry_id": "client-req-force-2",
+            "goal": "Find member 10001 and return savings balance",
+            "force_rediscover": True,
+        },
+        auth=("demo-client", "correct-pw"),
+    )
+    assert response.status_code == 200
+    assert response.json()["reused_existing_capability"] is False
