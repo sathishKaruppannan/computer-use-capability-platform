@@ -1826,3 +1826,79 @@ Two isolated servers (ports 8001/8201, distinct from the user's own already-runn
 uv run pytest -q -m "not e2e"   →  204 passed, 21 deselected   (up from 171 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 15 log — two chatbot bugs found live, intent prompt bumped to v2
+
+User reported two issues live from the admin chatbot (screenshot): (1) saying "Thank you" or "No,
+I am good" after a successful answer came back as a red "Clarification required" bubble instead
+of a normal reply, and (2) "Saving balance of this account 10001" identified the right intent
+(`retrieve_account_balance`) but then failed plan validation with "missing required inputs:
+['memberId']" — the goal said "account", not "member", so the model extracted a differently-named
+entity instead of recognizing it as the same identifier.
+
+Both root-caused to the intent-analysis prompt, not the pipeline logic, so both are fixed by
+**prompt content**, not new guardrail machinery layered on top. Per the user's explicit request,
+the prompt is bumped to a new version rather than edited in place:
+`agent/prompts/intent_v2.py` (new file, `PromptVariant(id="intent-analyzer", version=2, ...)`,
+`intent_v1.py` kept on disk, unused) — `agent/intent_analyzer.py`'s import swapped over.
+
+**Bug 1 (conversational acknowledgment).** `TaskIntent` gained `is_conversational: bool` +
+`conversational_reply: str | None` (additive, both default falsy) — a *third* guardrail-shaped
+flag, sibling to `requires_clarification`/`requests_sensitive_info`, but for messages that aren't
+ambiguous at all (they have a clear meaning) and aren't a business action either: greetings,
+thanks, acknowledgments of a prior turn this stateless call has no memory of. The prompt now
+teaches the model to recognize this as its own category instead of falling into
+`requires_clarification`. `AgentOrchestrator._intent_plan_resolve` builds a real, empty-step
+`ExecutionPlan` for it and returns immediately (skips `PlanValidator`, which correctly hard-rejects
+a zero-step plan for an actual task, but zero steps is the right shape here) — the resolve/execute
+loop then naturally does nothing, landing on a plain `SUCCESS` with no outputs.
+`GroundedSynthesizer.synthesize_agent_result` reads `intent.is_conversational` first and returns
+`intent.conversational_reply` verbatim instead of the nonsensical `"Completed 'unknown'. "` a bare
+`SUCCESS` with no real intent would otherwise produce — reading a new field off the existing
+`intent` parameter, not a new parameter, so the "no LLM-output parameter" guarantee on that
+function is unchanged.
+
+**Bug 2 (account/member entity synonym).** This demo domain has exactly one identifier, always
+named `memberId` downstream, but the original prompt's naming instructions only showed the model
+"member 10002" as an example — a goal phrased as "account 10001" had no worked example teaching it
+that this is the *same* field, so the model reasonably (but wrongly, for this system) treated it as
+a different one. `intent_v2.py` adds an explicit instruction ("account", "account ID", "account
+number", "ID", and "member" are all the same identifier here, never a separate `accountId`) plus a
+new worked example (1b) showing "account 10001" wording extracting `memberId`, not `accountId`.
+Pure prompt content — no model/orchestrator changes needed for this half.
+
+New tests: `test_intent_analyzer.py` (`is_conversational` round-trips and defaults false; asserts
+the analyzer is actually wired to `intent-analyzer.v2`), `test_orchestrator.py` (`execute_goal`
+returns a plain `SUCCESS` with the verbatim reply and zero steps/resolutions/execution for a
+conversational message; discovery-agent stub raises if ever called; `plan_only` returns the same
+empty shape), `test_synthesis_grounded.py` (conversational reply returned verbatim regardless of
+status; a `None` reply falls back to a generic acknowledgment, never crashes). The entity-naming
+fix is pure prompt content and isn't unit-testable against a `MockLLMProvider` (which just replays
+whatever dict it's given) — verified live instead, below.
+
+**Live-verified** against isolated servers/data (ports 8102/8202, not the user's own already-running
+8000/8001 instance — confirmed still up and untouched afterward), real Claude calls throughout:
+
+```
+"I saw your response with balance thank you." → status: success
+  synthesized_text: "You're welcome! I'm glad I could help. Let me know if there's anything else you need."
+"No, I am good" → status: success
+  synthesized_text: "Great! Feel free to reach out if you need anything else."
+"Saving balance of this account 10001" →
+  intent.entities: [{"name": "memberId", "value": "10001", ...}, {"name": "accountType", "value": "savings", ...}]
+  status: success, outputs: {"savingsBalance": 4250.25}
+```
+
+Regression-checked the two guardrails this sits next to: a normal goal still resolves and executes
+normally (`status: success`, `savingsBalance: 1220.0`), and a genuinely ambiguous goal ("Handle
+this member.") still asks for clarification (`HTTP 400`, the model's own follow-up question) —
+neither guardrail was weakened by adding the third one. `git status artifacts/ data/ config/`
+confirmed clean in the real repo throughout; the user's own running instance on 8000/8001 will need
+a restart to pick this fix up.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  211 passed, 21 deselected   (up from 204 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```

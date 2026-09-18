@@ -1,10 +1,18 @@
 import pytest
 
 from capability_platform.agent.intent_analyzer import IntentAnalysisError, IntentAnalyzer
+from capability_platform.agent.prompts.intent_v2 import VARIANT as INTENT_PROMPT_VARIANT
 from capability_platform.llm.mock_provider import MockLLMProvider
 from capability_platform.models import RiskLevel
 from capability_platform.settings import settings
 from capability_platform.validation import GoalTooLongError
+
+
+def test_intent_analyzer_uses_the_current_prompt_variant():
+    """Prompt content is versioned like a capability artifact (PromptVariant.qualified_id) --
+    a prompt-content change should bump the version and swap the analyzer over to it, not mutate
+    the old version's file in place."""
+    assert INTENT_PROMPT_VARIANT.qualified_id == "intent-analyzer.v2"
 
 SAVINGS_BALANCE_RESPONSE = {
     "intent": "retrieve_account_balance",
@@ -189,3 +197,28 @@ async def test_requests_sensitive_info_defaults_to_false():
     intent = await analyzer.analyze("Get the savings balance for member 10002")
     assert intent.requests_sensitive_info is False
     assert intent.sensitive_info_reason is None
+
+
+CONVERSATIONAL_RESPONSE = {
+    "intent": "unknown",
+    "domain": "unknown",
+    "operation": "read",
+    "risk": "read_only",
+    "confidence": 0.1,
+    "is_conversational": True,
+    "conversational_reply": "You're welcome! Let me know if there's anything else I can help with.",
+}
+
+
+async def test_is_conversational_round_trips_from_provider_response():
+    analyzer = IntentAnalyzer(MockLLMProvider(CONVERSATIONAL_RESPONSE))
+    intent = await analyzer.analyze("Thank you, that's all I needed.")
+    assert intent.is_conversational is True
+    assert intent.conversational_reply == "You're welcome! Let me know if there's anything else I can help with."
+
+
+async def test_is_conversational_defaults_to_false():
+    analyzer = IntentAnalyzer(MockLLMProvider(SAVINGS_BALANCE_RESPONSE))
+    intent = await analyzer.analyze("Get the savings balance for member 10002")
+    assert intent.is_conversational is False
+    assert intent.conversational_reply is None
