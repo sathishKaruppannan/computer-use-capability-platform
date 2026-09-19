@@ -326,11 +326,18 @@ class AgentOrchestrator:
                 error=RunError(
                     category=ErrorCategory.INTERNAL,
                     code="DISCOVERY_FAILED",
+                    # `message` stays human-readable, no raw Python exception class name in it
+                    # (a real one, e.g. "(LookupError)", was showing up verbatim in the chatbot
+                    # response, an internal implementation detail that means nothing to an end
+                    # user) -- the exception type still isn't lost, just moved to `observed`
+                    # (RunError's own field for "what was actually observed"), alongside the full
+                    # detail already in this run's evidence trace.
                     message=(
-                        f"Could not find or create a capability for this goal ({type(exc).__name__}). "
-                        "The goal may not correspond to anything reachable on the target system. See "
-                        "this run's evidence trace (GET /runs/{run_id}/events) for step-by-step detail."
+                        "Could not find or create a capability for this goal. The goal may not "
+                        "correspond to anything reachable on the target system. See this run's "
+                        "evidence trace (GET /runs/{run_id}/events) for step-by-step detail."
                     ),
+                    observed=type(exc).__name__,
                     step_id=step.id,
                     recoverable=False,
                 ),

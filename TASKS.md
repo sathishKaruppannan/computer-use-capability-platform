@@ -2103,3 +2103,43 @@ servers/data pattern as every other phase:
 uv run pytest -q -m "not e2e"   →  227 passed, 21 deselected   (up from 223 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 20 log — FAILURE text was leaking internal details into the chat
+
+User asked me to verify a response after a goal ("open su account for 10001") that genuinely
+doesn't correspond to anything on the demo app -- correctly hit the Phase 14 `DISCOVERY_FAILED`
+guardrail (clean typed failure, not a crash), but the text itself read technically:
+`Could not complete 'open_account': Could not find or create a capability for this goal
+(LookupError). ...` -- a raw Python exception class name and a raw snake_case intent id, both
+internal implementation details with no place in a chat response.
+
+**`orchestrator.py::_run_discovery`**: the exception's `type(exc).__name__` no longer appears in
+`RunError.message` at all -- moved to `RunError.observed` (the field this model already has for
+"what was actually observed instead"), so the debug detail isn't lost, just kept out of the
+human-readable text. The full trace is still in this run's own evidence log regardless.
+
+**`synthesis/result.py`**: the FAILURE branch now humanizes `intent.intent` the same way the
+no-outputs SUCCESS case already did (`_`  &rarr; space), with one more case handled: when
+`intent.intent == "unknown"` (the `IntentAnalysisError` fallback sentinel, or a guardrail
+placeholder), it now says `"this request"` instead of the literal, confusing word `'unknown'`.
+
+New/updated tests: the existing `DISCOVERY_FAILED` regression test now asserts the exception type
+lives in `observed`, not `message`; two new synthesis tests cover the humanized intent name and
+the `'unknown'` special case.
+
+**Live-verified with the user's exact reported goal**, same isolated servers/data pattern as
+every other phase:
+```
+Before: Could not complete 'open_account': Could not find or create a capability for this goal
+        (LookupError). ...
+After:  Could not complete 'open account': Could not find or create a capability for this goal.
+        ...
+        (error.observed == "LookupError" -- still captured, just not in the chat text)
+```
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  229 passed, 21 deselected   (up from 227 at the start of this phase)
+uv run ruff check .             →  All checks passed
+```
