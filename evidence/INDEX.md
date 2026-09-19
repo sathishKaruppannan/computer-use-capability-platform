@@ -53,3 +53,12 @@ producing a hard failure rather than a false success (`cf0a404b`); and several r
 successful replay runs from REST/MCP validation in Phase 6. None of these are fabricated — they
 are kept rather than deleted so the real engineering trail stays auditable, per the instruction
 not to represent anything other than genuine execution as evidence.
+
+Also present, from the goal-driven-pipeline work in later phases (`evidence/README.md`'s
+"Goal-driven pipeline, guardrails, and natural-language synthesis" section has the full story):
+two real, user-reported bugs — `GroundedSynthesizer` silently dropping a correctly-computed fact
+(`8e46424a`, fixed in `313b6989`/`d88ce1db`) and `FAILURE` text leaking a raw Python exception
+class name plus a raw snake_case intent id (`bc0fa3df`, fixed in `2450b42c`) — each kept as a
+real before/after pair, same convention as this file's Phase 4/4b entries above. Also a genuine
+conversational-message-misclassified-as-clarification bug run (`a5678129`) and two more real
+ambiguous-goal clarifications working as designed (`5aafbc96`, `a614d492`).

@@ -210,3 +210,64 @@ session. Their content is genuine (real successful/business-outcome replays agai
 demo app), just predating the artifact regenerated in this phase. Left in place rather than
 deleted, since they are real runs, not fabricated ones.
 
+## Goal-driven pipeline, guardrails, and natural-language synthesis (later session work)
+
+`AgentOrchestrator` (Intent Analyzer → Planner → PlanValidator → CapabilityResolver → Executor →
+`GroundedSynthesizer`, `agent/orchestrator.py`) replaced "every goal goes straight to discovery."
+The runs below are real interaction traces from live use of the admin console chatbot
+(`GET /admin`) during this same session — not scripted for evidence. Two real bugs are captured
+here exactly as found, each with a follow-up run showing the corrected text, same precedent as
+the Phase 4b discovery-failure diagnosis above: kept rather than deleted.
+
+### Grounded-synthesis fact-dropping bug, found and fixed
+
+`GroundedSynthesizer`'s SUCCESS branch used to filter its fact list through the LLM-derived
+`TaskIntent.required_outputs` field instead of the deterministic `outputs` dict the aggregator
+already computed — for a goal phrased tersely enough that the model's own output naming didn't
+exactly match the plan's key, this silently dropped a value that had already been computed
+correctly, right next to a trace panel proving it.
+
+| Run ID | Stage | `result.synthesized.text` |
+|---|---|---|
+| `8e46424a-9439-4ab6-a78f-f452149eeafd` | Bug, live | `Completed 'retrieve_account_balance'. ` — value silently dropped |
+| `313b6989-be8c-4e56-9fbe-a14db2792812` | Fixed (raw values), before naturalization | `Completed 'retrieve_account_balance'. savingsBalance: 4250.25` |
+| `d88ce1db-9ff9-446d-be77-c9d0861a8fdf` | Fixed and reworded to read naturally | `The savings balance is 4250.25.` |
+
+### FAILURE text leaking internal details, found and fixed
+
+A goal with no sensible business meaning on the target correctly failed clean (no crash — the
+`DISCOVERY_FAILED` guardrail from earlier in this same phase working exactly as designed), but
+the message text itself leaked a raw Python exception class name and a raw snake_case intent id.
+
+| Run ID | Stage | `result.synthesized.text` |
+|---|---|---|
+| `bc0fa3df-26cd-4ff7-a029-1514a71ee5f5` | Bug, live (`open su account for 10001`) | `Could not complete 'open_account': Could not find or create a capability for this goal (LookupError). ...` |
+| `2450b42c-f3da-4626-bce2-210a954ef8ae` | Fixed (`open sub account for 10001`) | `Could not complete 'open sub account': Could not find or create a capability for this goal. ...` — no exception class name, humanized intent |
+
+Also genuinely captured, the same guardrail on a different unresolvable goal —
+`503aee37-a90b-48c0-8981-6de82ca566ad` ("reticulate splines for member 10001"): clean
+`DISCOVERY_FAILED`, never an unhandled 500 (the original bug this guardrail was built to fix).
+
+### Conversational message misclassified as clarification, found and fixed
+
+A plain "thank you"-style follow-up (no task content at all) was routed through the ambiguous-goal
+`requires_clarification` guardrail instead of getting a plain acknowledgment — technically
+defensible (the message genuinely isn't a task) but poor chat UX.
+
+`a5678129-df7f-474f-b816-cc29abdf1930`: `intent.clarification_required` event, `question: "This
+appears to be an acknowledgment of a previous response. Is there anything else you would like me
+to help you with?"` — the exact live run behind the bug report. Fixed by adding a third
+guardrail-shaped flag, `TaskIntent.is_conversational`, checked before this branch is reached; see
+`TASKS.md`'s phase log for the live-verified fix (re-run against isolated servers/data outside
+this repo, so no "after" run is committed here — the "before" bug run above is real and kept for
+the same reason the Phase 4/4b discovery failures above were kept).
+
+### Ambiguous-goal clarification, working as designed
+
+Two more genuine examples of `requires_clarification` correctly triggering for goals that really
+are unclassifiable: `5aafbc96-6895-4184-af99-85b6e1acb262` and
+`a614d492-7081-4b52-a051-8bb93a64ec47`, both `question: "What would you like help with today?"`.
+
+**Redaction check**: `uv run python scripts/validate_evidence.py` passed against the full
+`evidence/` tree (266 text files, 0 issues) before any of the runs above were committed.
+
