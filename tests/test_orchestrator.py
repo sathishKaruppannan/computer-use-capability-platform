@@ -113,7 +113,12 @@ async def test_unresolved_step_falls_back_to_real_discovery_agent(tmp_path):
             calls.append(goal)
             return CapabilityArtifact.model_validate(
                 {
-                    "id": "open-account-preferences",
+                    # Deliberately not a name a real demo run would ever produce (e.g.
+                    # "open-account-preferences") -- this test uses the REAL, shared
+                    # artifacts/ directory (via _build_orchestrator), and a real live run
+                    # through the admin console approving a same-named capability collided
+                    # with this stub for real, failing this test with no code bug at all.
+                    "id": "test-only-unresolved-stub-capability",
                     "version": 1,
                     "name": "Open account preferences",
                     "description": "stub",
@@ -140,7 +145,7 @@ async def test_unresolved_step_falls_back_to_real_discovery_agent(tmp_path):
 
     assert calls, "discovery agent should have been invoked for an unresolvable step"
     assert result.status == RunStatus.PAUSED
-    assert result.execution[0].descriptor_id == "open-account-preferences.v1"
+    assert result.execution[0].descriptor_id == "test-only-unresolved-stub-capability.v1"
 
 
 async def test_discovery_failure_returns_a_clean_failure_result_not_an_unhandled_exception(tmp_path):

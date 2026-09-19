@@ -2143,3 +2143,52 @@ After:  Could not complete 'open account': Could not find or create a capability
 uv run pytest -q -m "not e2e"   →  229 passed, 21 deselected   (up from 227 at the start of this phase)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 21 log — credentials can be attached before approval, not only alongside/after it
+
+User asked how to test the login-gated create-then-approve flow, and specifically whether adding
+credentials *before* approval was possible. It wasn't: `POST /v1/capabilities/{id}/credentials`
+previously hard-required `lifecycle in AGENT_EXPOSABLE_LIFECYCLES`, so credentials could only be
+attached at approval time (`POST .../approve` with a body) or after it.
+
+Removed that guard. Storing credentials never grants execution access on its own -- only an
+approved/active capability can actually be invoked, checked independently at every execute path
+(`AGENT_EXPOSABLE_LIFECYCLES`) -- so attaching credentials to a still-draft artifact is safe: an
+admin can now set up a login-gated capability in either order, approve-then-credential or
+credential-then-approve, instead of one forced sequence. The "declares a credential field" and
+admin-only checks are unchanged.
+
+Updated the one test that asserted the old (now-intentionally-changed) behavior; added a test
+proving the new one round-trips through the real store.
+
+**A useful side-effect of this work**: running the full suite surfaced two `tests/test_orchestrator.py`
+failures caused entirely by the user's own live use of the admin console in this same session (not
+by this change) -- `lookup-member-savings-balance.v1` was briefly in `draft` (they were testing the
+approve flow themselves) and a real `open-account-preferences.v1` capability they legitimately
+created and approved (following instructions from Phase 20) collided with a same-named stub
+artifact this test file's discovery-fallback test constructs. Confirmed both were the user's own,
+wanted, real state (not stray residue) before touching anything -- left the shared `artifacts/`
+directory alone, and instead renamed the test's synthetic stub id to something that can never
+collide with a real demo capability name (`test-only-unresolved-stub-capability`). This is the
+second time this exact class of test/live-data collision has appeared (see Phase 19's note); still
+a known, named, low-priority gap in how `tests/test_orchestrator.py` shares the real `artifacts/`
+directory with a live admin session, not fixed wholesale in this pass since it's a repo-wide
+convention (17+ test files read directly from the real `artifacts/` directory on purpose), not a
+bug isolated to one file.
+
+**Live-verified end to end**, the exact flow asked about, on isolated servers/data with a draft
+copy of the real login-gated capability:
+```
+1. POST .../credentials on a still-draft capability  -> 200 (previously would have been 403)
+2. POST .../approve (no credentials needed this time -- already saved)  -> 200, lifecycle=approved
+3. POST /agent/execute, same goal, no credentials in the request        -> real Playwright login,
+   status=success, savingsBalance: 1220.0
+```
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  229 passed, 21 deselected   (net unchanged -- one test's
+                                     intentional-behavior-change replaced another's addition)
+uv run ruff check .             →  All checks passed
+```

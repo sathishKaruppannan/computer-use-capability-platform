@@ -713,7 +713,11 @@ def test_save_credentials_v1_requires_admin(monkeypatch, tmp_path):
     assert response.status_code == 403
 
 
-def test_save_credentials_v1_rejects_capability_not_yet_approved(monkeypatch, tmp_path):
+def test_save_credentials_v1_allows_a_still_draft_capability(monkeypatch, tmp_path):
+    """Storing credentials never grants execution access on its own -- only an approved/active
+    capability can actually be invoked, checked separately at every execute path -- so an admin
+    can set up a login-gated capability in either order: approve then add credentials, or add
+    credentials then approve. Draft-state credentials just sit ready for when it's approved."""
     _configure(monkeypatch, tmp_path)
     _register_client("admin-client", "correct-pw", [ServiceType.MEMBER_SAVINGS_BALANCE_LOOKUP], is_admin=True)
     ArtifactStore(global_settings.artifact_dir).save(_login_gated_artifact("secure-cap", "draft"))
@@ -724,7 +728,13 @@ def test_save_credentials_v1_rejects_capability_not_yet_approved(monkeypatch, tm
         json={"client_id": "demo-client", "username": "demo", "password": "letmein-2024"},
         auth=("admin-client", "correct-pw"),
     )
-    assert response.status_code == 403
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"capability_id": "secure-cap.v1", "client_id": "demo-client", "saved": True}
+
+    stored = JSONTenantCredentialStore(global_settings.tenant_credential_dir).get("secure-cap.v1", "demo-client")
+    assert stored is not None
+    assert stored.username == "demo"
 
 
 def test_save_credentials_v1_rejects_capability_without_credential_inputs(monkeypatch, tmp_path):
