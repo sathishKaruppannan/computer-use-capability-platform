@@ -255,12 +255,34 @@ ADMIN_HTML = """<!doctype html>
     </div>
     <p class="meta">Already approved and matches the pair above? "Run discover" will just <b>reuse</b> it (correct
       behavior, not a bug — no new draft, no Claude call). To demo the approve flow (§2) again without spending a
-      real ~30-60s Claude call every time, reset it back to <code>draft</code> instead:</p>
+      real ~30-60s Claude call every time, reset it back to <code>draft</code> instead — pick from every artifact
+      this console currently knows about (list refreshes automatically as you use the page, or click "Refresh
+      everything" above):</p>
     <div class="row">
-      <div class="field"><label>capability_id to reset</label><input id="rd-capability-id" value="lookup-member-savings-balance.v1"></div>
+      <div class="field"><label>capability to reset</label><select id="rd-capability-id"></select></div>
     </div>
     <button onclick="resetToDraft()">Reset to draft (no Claude call, instant)</button>
     <p id="rd-status" class="meta"></p>
+
+    <div class="impl" style="margin-top:18px"><b>Implements:</b> <code>POST /v1/capabilities/{id}/credentials</code>
+      (<code>save_credentials_v1</code>) — works on a still-<code>draft</code> capability exactly as well as an
+      already-<code>approved</code> one (storing credentials never grants execution access on its own; only an
+      approved/active capability can actually run, checked separately at every execute path). Repeatable on
+      purpose: re-running this for the same <code>(capability_id, client_id)</code> pair overwrites the stored
+      value, so different usernames/passwords can be tried against the same capability as many times as needed,
+      without re-approving anything each time.</div>
+    <p class="meta">Save (or update/retest) login credentials for one client, on any capability — draft or
+      approved:</p>
+    <div class="row">
+      <div class="field"><label>capability</label><select id="cred-capability-id"></select></div>
+      <div class="field"><label>client_id</label><input id="cred-client-id" value="demo-client"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>username</label><input id="cred-username" value="demo"></div>
+      <div class="field"><label>password</label><input id="cred-password" type="password" value="letmein-2024"></div>
+    </div>
+    <button onclick="saveCredentials()">Save credentials</button>
+    <p id="cred-status" class="meta"></p>
   </section>
 
   <section id="test-app">
@@ -791,6 +813,7 @@ async function submitDiscover() {
 async function resetToDraft() {
   const status = document.getElementById('rd-status');
   const capId = document.getElementById('rd-capability-id').value;
+  if (!capId) { status.textContent = 'No capability selected — click "Refresh everything" above first.'; return; }
   status.textContent = 'Resetting…';
   try {
     const res = await fetch(`/admin/reset-to-draft/${encodeURIComponent(capId)}`, { method: 'POST' });
@@ -798,6 +821,44 @@ async function resetToDraft() {
     if (!res.ok) { status.textContent = `Failed: ${data.detail || res.status}`; return; }
     status.textContent = `${data.capability_id} is now "${data.lifecycle}" — see §2 Pending artifacts below.`;
     refreshAll();
+  } catch (e) { status.textContent = 'Error: ' + esc(e); }
+}
+
+// Shared by the "reset to draft" and "save credentials" pickers -- both need "every capability
+// this console currently knows about", refreshed on the same cadence as §3 All artifacts.
+// Preserves each dropdown's current selection across a refresh where the option still exists,
+// so re-testing the same capability repeatedly doesn't require re-picking it every time.
+function populateCapabilityDropdowns() {
+  const optionsHtml = state.allArtifacts.map(a =>
+    `<option value="${esc(a.capability_id)}">${esc(a.capability_id)} (${esc(a.lifecycle)})</option>`
+  ).join('');
+  for (const id of ['rd-capability-id', 'cred-capability-id']) {
+    const select = document.getElementById(id);
+    if (!select) continue;
+    const previous = select.value;
+    select.innerHTML = optionsHtml;
+    if (Array.from(select.options).some(o => o.value === previous)) select.value = previous;
+  }
+}
+
+async function saveCredentials() {
+  const status = document.getElementById('cred-status');
+  const capId = document.getElementById('cred-capability-id').value;
+  if (!capId) { status.textContent = 'No capability selected — click "Refresh everything" above first.'; return; }
+  status.textContent = 'Saving…';
+  try {
+    const res = await fetch(`/v1/capabilities/${encodeURIComponent(capId)}/credentials`, {
+      method: 'POST',
+      headers: { 'Authorization': authHeader(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        client_id: document.getElementById('cred-client-id').value,
+        username: document.getElementById('cred-username').value,
+        password: document.getElementById('cred-password').value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) { status.textContent = `Failed: HTTP ${res.status} — ${data.detail || 'error'}`; return; }
+    status.textContent = `Saved credentials for client "${data.client_id}" on ${data.capability_id} — works whether it's draft or approved. Try it via the chatbot above (§0), or approve it first in §2 below.`;
   } catch (e) { status.textContent = 'Error: ' + esc(e); }
 }
 
@@ -867,6 +928,7 @@ async function loadAllArtifacts() {
     }
   } catch (e) { /* ignore */ }
   state.allArtifacts = rows;
+  populateCapabilityDropdowns();
   document.getElementById('all-count').textContent = rows.length;
   if (rows.length === 0) { el.innerHTML = '<p class="empty">No artifacts yet — run §1 Client initiate first.</p>'; return; }
   el.innerHTML = pendingNote + `<table class="stats"><tr><th>id</th><th>name</th><th>lifecycle</th><th>service_type</th><th>system_identifier</th></tr>` +

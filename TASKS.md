@@ -2192,3 +2192,40 @@ uv run pytest -q -m "not e2e"   →  229 passed, 21 deselected   (net unchanged 
                                      intentional-behavior-change replaced another's addition)
 uv run ruff check .             →  All checks passed
 ```
+
+## Phase 22 log — a real UI for the credentials-before-approve flow, and dropdown re-testing
+
+Phase 21 made "save credentials to a draft capability" possible over REST, but the only way to
+try it was curl. User asked for a UI flow, plus a way to re-test repeatedly without retyping
+capability ids by hand.
+
+**New "Save credentials" form in §1** (`api/admin.py`): capability picker, `client_id`,
+`username`, `password`, one button, calling the real `POST /v1/capabilities/{id}/credentials` --
+works identically whether the picked capability is `draft` or `approved`, matching Phase 21's
+change. Re-running it for the same `(capability_id, client_id)` pair overwrites the stored value
+on purpose, so different credentials can be tried against the same capability repeatedly.
+
+**"capability_id to reset" converted from a free-text `<input>` to a `<select>`**, populated (and
+kept in sync) from the same live artifact list §3 All artifacts already builds
+(`GET /capabilities` + `GET /v1/capabilities/pending`, merged client-side). New
+`populateCapabilityDropdowns()` fills both this dropdown and the new credentials one from a
+single shared list, preserving each dropdown's current selection across a refresh where the
+option still exists -- picking a capability once and re-testing several times in a row doesn't
+require re-selecting it after every "Refresh everything".
+
+Extended the existing admin-console smoke test (`test_admin_endpoints.py`) to assert both pickers
+render as real `<select>` elements, not text inputs, and that the new JS functions are present.
+
+**Live-verified** the actual data flow the dropdowns render from, on an isolated server with a
+draft copy of the real login-gated capability: fetched the same two endpoints
+`populateCapabilityDropdowns()` combines and confirmed all 7 real capabilities appear with
+correct lifecycle labels, including the draft one -- proving the credentials-on-a-draft scenario
+from Phase 21 is concretely selectable in the UI, not just reachable via curl.
+
+### Verification
+
+```
+uv run pytest -q -m "not e2e"   →  229 passed, 21 deselected   (net unchanged -- one existing
+                                     test extended in place, no new test added)
+uv run ruff check .             →  All checks passed
+```
