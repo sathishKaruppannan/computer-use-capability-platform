@@ -153,6 +153,12 @@ def test_admin_console_renders_and_includes_the_chatbot_section(monkeypatch, tmp
     assert "EXAMPLE_GOALS" in body
     assert 'id="trace-box"' in body
     assert "friendlyEvent" in body
+    # Repeatable-testing UI: dropdown pickers (not free-text ids) for "reset to draft" and
+    # "save/update credentials", both populated from the same live artifact list.
+    assert '<select id="rd-capability-id">' in body
+    assert '<select id="cred-capability-id">' in body
+    assert "saveCredentials" in body
+    assert "populateCapabilityDropdowns" in body
 
 
 @pytest.mark.e2e
