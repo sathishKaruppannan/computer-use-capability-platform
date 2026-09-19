@@ -354,11 +354,14 @@ in that order, with no extra or missing headings.
 
 **Where this actually shows up:** REST (`api/app.py`), MCP (`mcp/server.py`),
 embeddings/reranking (`capabilities/registry.py`), synthesis (`synthesis/result.py`) all exist,
-are real and tested, but are **not required**. `capabilities/registry.py` in particular is fully
-unwired — nothing in `discover`/`replay`/REST/MCP ever calls `.search()`; it's a correct,
-tested, standalone module, not a half-built live feature. This is intentional and disclosed in
-`REPORT.md` §7 ("Cuts") — the recommendation, if you have more time, is to make the load-bearing
-pieces above deeper still, not to wire this in without a concrete need.
+are real and tested, but are **not required**. `capabilities/registry.py` **is now wired into the
+live resolver** (`capabilities/resolver.py::CapabilityResolver.resolve()` calls `.search()` on
+every `capability-platform plan`/`run` call and every `POST /agent/plan`/`/agent/execute`
+request, since the goal-driven pipeline in `REPORT.md` §1's later update) — not the standalone,
+unwired module this note originally described. The unwired-vs-wired history is itself evidence of
+the anti-goal being managed deliberately: the module shipped small and tested first, and was only
+wired into a real call path once the goal-driven pipeline gave it a concrete need, not wired in
+speculatively. See `REPORT.md` §1/§7 for the full, current story.
 
 ---
 
@@ -426,7 +429,8 @@ make replay
 
 ## Quick reference — where the honest gaps are
 
-- `capabilities/registry.py` (embeddings/reranking) — real, tested, **unwired**.
+- `capabilities/registry.py` (embeddings/reranking) — real, tested, **and now wired into the live
+  resolver** (see §7 above) — not a standalone module anymore.
 - `tenant_overrides` — a real schema field, **nothing reads it at runtime**.
 - Authentication — **not designed**, disclosed explicitly in `REPORT.md` §4.
 - Screenshots — **never redacted** (text evidence is); fine only because all data is synthetic.
