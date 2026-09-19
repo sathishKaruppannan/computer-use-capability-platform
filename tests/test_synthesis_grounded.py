@@ -138,6 +138,28 @@ def test_failure_without_a_captured_error_falls_back_to_the_generic_message():
     assert "see execution details" in text
 
 
+def test_failure_humanizes_the_intent_name_instead_of_showing_raw_snake_case():
+    """Regression test for a real, live-observed issue: 'Could not complete 'open_account': ...'
+    read as a raw internal identifier leaking into a chat response, next to a goal that was
+    otherwise handled correctly (the DISCOVERY_FAILED guardrail from a prior phase)."""
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(intent="open_account"), outputs={}, status=RunStatus.FAILURE, execution=[]
+    )
+    assert "open account" in text
+    assert "open_account" not in text
+
+
+def test_failure_with_unknown_intent_never_shows_the_literal_word_unknown():
+    """intent='unknown' is the sentinel for an intent the analyzer never actually classified
+    (IntentAnalysisError's own fallback, or a guardrail placeholder) -- showing it verbatim in a
+    failure message would be as confusing as the raw exception-name leak this phase also fixed."""
+    text = GroundedSynthesizer.synthesize_agent_result(
+        intent=_intent(intent="unknown"), outputs={}, status=RunStatus.FAILURE, execution=[]
+    )
+    assert "'unknown'" not in text
+    assert "this request" in text
+
+
 def test_conversational_intent_returns_the_reply_verbatim_regardless_of_status():
     conversational = _intent(
         is_conversational=True,

@@ -164,7 +164,12 @@ async def test_discovery_failure_returns_a_clean_failure_result_not_an_unhandled
     assert result.status == RunStatus.FAILURE
     assert result.execution[0].error.code == "DISCOVERY_FAILED"
     assert result.execution[0].error.category.value == "internal"
-    assert "LookupError" in result.execution[0].error.message
+    # The raw Python exception class name is real, useful debug detail -- but not in the
+    # human-readable `message` a chat UI shows verbatim (a real one, "(LookupError)", was found
+    # showing up exactly there live). It lives in `observed` instead, alongside the full detail
+    # already in this run's evidence trace.
+    assert result.execution[0].error.observed == "LookupError"
+    assert "LookupError" not in result.execution[0].error.message
     assert "role:button matched 0" not in result.execution[0].error.message
 
 

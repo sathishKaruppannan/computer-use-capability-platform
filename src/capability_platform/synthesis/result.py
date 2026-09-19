@@ -87,7 +87,8 @@ class GroundedSynthesizer:
                             "goal. Please ask your admin to review and approve it, then try again."
                         )
             return "One or more steps are awaiting human approval. Please try again once an admin has resolved this."
+        action = intent.intent.replace("_", " ") if intent.intent != "unknown" else "this request"
         for result in execution:
             if result.status == RunStatus.FAILURE and result.error:
-                return f"Could not complete '{intent.intent}': {result.error.message}"
-        return f"Could not complete '{intent.intent}': see execution details for the failing step."
+                return f"Could not complete '{action}': {result.error.message}"
+        return f"Could not complete '{action}': see execution details for the failing step."
