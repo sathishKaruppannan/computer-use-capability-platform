@@ -199,6 +199,15 @@ aborting the whole run — Claude is retried again on the next step. Set `OPENAI
 `tests/test_discovery_fallback.py` (mocked, no real keys needed) and `evidence/README.md` for a
 real end-to-end run where Anthropic was genuinely broken and GPT-5 mini completed the discovery.
 
+**The same `OPENAI_API_KEY` also upgrades capability retrieval, opt-in.** With no key set,
+`CapabilityResolver` matches a goal to an existing capability using a dependency-free,
+deterministic hashing-trick embedding (no network call, no real semantic understanding). With
+`OPENAI_API_KEY` set, real `text-embedding-3-small` embeddings are used automatically instead,
+cached so unchanged capability text is never re-embedded across requests. Neither key is required
+for the system to work end to end — only `discover` (and the chatbot's discovery-fallback path)
+needs `ANTHROPIC_API_KEY`; `OPENAI_API_KEY` is optional in both of its roles and everything
+degrades gracefully without it.
+
 ## Exact demo path
 
 Terminal 1:
