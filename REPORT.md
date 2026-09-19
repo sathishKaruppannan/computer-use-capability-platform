@@ -26,6 +26,32 @@ exact-key reuse, not semantic retrieval, and it predates the general resolver ab
 two (or deprecating the exact-key path in favor of the semantic one) is a natural next step, not
 yet done.
 
+**Update (Phases 14-22) — guardrails, per-client credentials, and grounded generation, all live.**
+Before a goal ever reaches the Planner, the Intent Analyzer's own structured output carries three
+mutually-exclusive guardrail flags the orchestrator checks first: `requires_clarification`
+(genuinely unclassifiable — refuses to guess, asks the model's own follow-up question),
+`requests_sensitive_info` (a full SSN, password, API key, session token, or unmasked account
+number — refused outright, in full, even if bundled with a legitimate request), and
+`is_conversational` (a greeting/thanks/acknowledgment with no task content — a plain, warm reply,
+not routed through the ambiguous-goal path). A login-gated capability's `username`/`password` are
+satisfiable via a per-client `TenantCredentialStore` (`access/tenant_credentials.py`, keyed by
+`(capability_id, client_id)`, plaintext at rest — see §2/§4) rather than something a caller
+supplies per request; the resolver treats them as structurally satisfiable by field name, and the
+executor pulls them automatically at run time, failing cleanly with `CREDENTIALS_REQUIRED` (see
+§3) if nothing is stored yet. `CapabilityRegistry`'s retrieval step gained an injectable
+`embed_fn`, defaulting to the original hashing trick; a real OpenAI `text-embedding-3-small`
+provider wires in automatically when `OPENAI_API_KEY` is configured, cached at module level so
+the same capability text is never re-embedded across requests — deliberately not a vector
+database, since neither persistent storage nor approximate-nearest-neighbor search at scale is a
+real constraint at this project's size. `GroundedSynthesizer`'s response text is a natural-
+language sentence built from the deterministic `outputs` dict directly (a real bug — filtering
+through the LLM-derived `TaskIntent.required_outputs` field instead silently dropped a correctly-
+computed value when the model's own output naming didn't exactly match the plan's key — found
+live and fixed), with output labels mechanically humanized (`savingsBalance` → "savings balance")
+from camelCase, no per-output dictionary. A chatbot-style admin console (`GET /admin`) exercises
+this whole pipeline end to end against the real `POST /agent/execute`, alongside a trace panel
+that relabels the run's own real evidence events for a non-engineer audience.
+
 The implementation is a modular monolith. That keeps the POC observable and easy to run while
 preserving separable boundaries: agent reasoning, capability resolution, policy, surface control,
 replay, intervention, evidence, synthesis, and agent-facing transports. The `SurfaceAdapter`
@@ -66,6 +92,13 @@ keeping the artifact reviewable by both people and calling agents. JSON was sele
 and MCP/REST schema compatibility. A production store would add immutable hashes, signatures,
 schema migration, and optimistic versioning.
 
+**Update (Phase 14).** Credentials are typed inputs on the artifact (`username`/`password`,
+`ParameterSpec(sensitive=True)` for the password) exactly as originally described — what changed
+is where the *values* come from at replay time. A per-client `TenantCredentialStore` (see §4)
+supplies them, never the artifact itself and never a request body from a calling agent on the
+goal-driven path; the artifact still only ever carries the `{{username}}`/`{{password}}`
+placeholders it always did.
+
 ## 3. Determinism & error handling
 
 Replay validates arguments, independently authorizes the app URL and every action, resolves each
@@ -86,6 +119,24 @@ categories. This prioritizes legitimate runtime states over speculative self-hea
 UI drift is handled secondarily through semantic targets, bounded fallbacks, version bindings, and
 telemetry on which locator succeeded. Falling below a reliability threshold should move a capability
 to `degraded` and prevent unattended execution.
+
+**Update (Phases 14/18/20) — two new error codes, and two real bugs found and fixed live.**
+`CREDENTIALS_REQUIRED` (`category=auth`, `recoverable=false`, naming the exact admin endpoint to
+call) fires when a login-gated capability resolves but nothing is stored for the calling client —
+never a partial or garbled login attempt. `DISCOVERY_FAILED` (`category=internal`) fires when a
+live discovery fallback itself raises; this was a real bug before the fix — a goal with no
+sensible business meaning on the target drove discovery into an exception that propagated as an
+unhandled 500, found during live verification and closed by wrapping that one call site so any
+exception becomes a clean, typed `FAILURE` instead. Its message stays human-readable: a raw
+exception class name (`LookupError`) was found leaking into the response text live, moved to
+`RunError.observed` and kept out of `message`. A second real bug lived in the synthesis layer, not
+replay: the SUCCESS response text was filtered through an LLM-derived field
+(`TaskIntent.required_outputs`) instead of the deterministic aggregator's own `outputs` dict,
+silently dropping a correctly-computed value whenever the model's own output naming didn't exactly
+match the plan's key. Fixed by reading `outputs` directly — the synthesizer still takes no LLM
+provider as input; this only removed a redundant, LLM-influenced filter sitting in front of an
+already-trustworthy value. Both bugs are kept as committed evidence, real before/after run pairs,
+in `evidence/README.md`.
 
 ## 4. Heterogeneity & multi-tenant
 
@@ -201,6 +252,23 @@ second artifact model:
   which is real infrastructure this project doesn't build — the design boundary is exactly the
   `access/` package seam already established.
 
+**Update (Phase 14) — a demo-scoped simplification of the design above, actually built.** The full
+session-lifecycle design (per-`(tenant_id, application)` cookie/token cache, `auth_mode` on
+`ApplicationBinding`, a login capability triggered on cache miss) remains the target for a
+production system and is still not built. What is built, live-verified, and load-bearing today is
+a narrower slice of the same problem — reusing one login-gated capability across multiple
+*clients* (the existing REST-auth `client_id`, not a full multi-tenant `tenant_id`):
+`TenantCredential` (`access/models.py`) is deliberately plaintext at rest, unlike
+`access/credentials.py`'s one-way-hashed client passwords, because the value has to be retyped
+into a real login form at replay time, not just verified — the demo-appropriate simplification of
+the encrypted-secrets-store design above, scoped to the one auth mode this system actually drives
+(username/password). An admin attaches credentials for one client either inline with approval or
+via a standalone endpoint that works on a still-draft artifact just as well as an approved one
+(storing credentials never grants execution access on its own — only an approved/active
+capability can run, checked independently at every execute path). Live-verified end to end: the
+same login-gated capability, two different clients, each with their own stored credentials, one
+real Playwright login apiece.
+
 What stays a real cut, honestly: an actual secrets-vault implementation, and a second working
 example of a non-credentials `auth_mode` (only the demo's basic-auth `/secure/*` flow is real and
 evidenced) — building either would be exactly the "scaling infrastructure" the PDF says isn't
@@ -234,6 +302,22 @@ permission — nothing about the model's own output can set `approved=True`. Bro
 output is untrusted data and is not inserted as system instruction. External MCP capabilities
 must be normalized, publisher-verified, allowlisted, scope-reviewed, and data-classification
 compatible before becoming selectable.
+
+**Update (Phase 15) — a second safety layer, ahead of planning entirely.** The mechanisms above
+govern what an already-planned step is allowed to *do*; three additional guardrails, checked
+immediately after intent analysis and before the Planner ever runs, govern whether a goal should
+be acted on at all. `requests_sensitive_info` refuses a goal asking to retrieve a full SSN,
+password, API key, session token, or unmasked account number — the same category
+`observability/evidence.py`'s `Redactor` already treats as secret — refusing the goal in full even
+when a legitimate request is bundled alongside it, never partially answering. `requires_clarification`
+refuses to guess at a genuinely unclassifiable goal, surfacing the model's own follow-up question
+instead of proceeding on a low-confidence placeholder. Both are boolean fields the Intent
+Analyzer's own structured output sets, not a second LLM call or a regex layer — one call, multiple
+concerns, at the exact point the goal's meaning is already being extracted. A goal that fails to
+fulfill for a genuinely mundane reason (nothing on the target corresponds to what was asked) also
+fails safe rather than crashing: any exception during a live discovery fallback becomes a clean,
+typed `DISCOVERY_FAILED` result — found as a real bug during live use (an unhandled exception
+reached the caller as a raw 500) and closed the same session (see §3).
 
 Evidence is structured and redacted before disk writes. Credentials, tokens, cookies, full SSNs, and
 raw sensitive inputs are not permitted in artifacts. A real deployment also needs isolated workers,
@@ -294,3 +378,27 @@ existing pages) — e.g. an actual "account preferences" screen, or a real note-
 still can't complete, because the UI to complete it against doesn't exist. That's an app-surface
 gap, not a discovery-agent hardcoding gap, and building new demo-app pages purely to close it
 would be exactly the kind of feature breadth the assignment says isn't rewarded.
+
+**Update (Phases 14-22) — goal-driven guardrails, per-client credentials, opt-in real embeddings,
+and two real bugs found and fixed live.** Beyond Phase 10's intent-routing work: three
+intent-level guardrails (§1, §6); a per-client credential store enabling one login-gated
+capability to be reused across clients (§1, §4); an injectable real-embedding provider for
+capability retrieval, opt-in via `OPENAI_API_KEY`, with a module-level cache so a
+network-calling provider doesn't re-embed unchanged text on every request (§1) — deliberately not
+a vector database, since neither persistent storage nor approximate-nearest-neighbor search at
+scale is a real constraint at this project's size; a chatbot-style admin console
+(`GET /admin`) that drives the real `POST /agent/execute` pipeline end to end, with an
+example-goals reference panel and a trace panel that relabels a run's real evidence events, not a
+scripted animation. Two real, user-reported bugs were found live and fixed, both kept as committed
+evidence (`evidence/README.md`'s "Goal-driven pipeline, guardrails, and natural-language
+synthesis" section has the full before/after): `GroundedSynthesizer` silently dropping a
+correctly-computed fact when the model's own output naming didn't match the plan's key, and
+`FAILURE` response text leaking a raw Python exception class name and a raw snake_case intent id.
+Neither required new guardrail machinery — both were fixed by reading from the already-canonical,
+deterministic value instead of an LLM-derived one that happened to usually agree with it.
+
+What's still genuinely outstanding, honestly: the two resolution paths named in Architecture's own
+Phase 10 update (the semantic resolver and `/v1/discover`'s exact-key reuse) remain unmerged;
+`/v1/discover`'s own discovery call site still doesn't have the `DISCOVERY_FAILED` safety net
+`/agent/execute`'s does (a real, disclosed, unclosed gap); and a human-intervention pause still
+has no timeout — an unanswered one blocks its coroutine forever.
