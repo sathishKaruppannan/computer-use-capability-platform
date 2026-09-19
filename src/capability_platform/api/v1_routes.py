@@ -373,18 +373,22 @@ def save_credentials_v1(
     request: SaveCredentialsRequest,
     credential: ClientCredential = Depends(authenticate_client),  # noqa: B008 - FastAPI's own idiom
 ) -> SaveCredentialsResponse:
-    """Adds (or replaces) stored login credentials for one client, for an already-approved
-    capability -- the multi-tenant-reuse piece: the same login-gated capability can be replayed
-    by many clients, each with their own stored credentials, without re-approving it or embedding
-    any one client's secret in the artifact itself. Admin-only, same as approve."""
+    """Adds (or replaces) stored login credentials for one client, for any known capability --
+    draft or already-approved. Storing credentials never grants execution access on its own:
+    only an approved/active capability can actually be invoked
+    (capabilities.store.AGENT_EXPOSABLE_LIFECYCLES, checked separately at every execute path), so
+    attaching credentials to a still-draft artifact is safe -- it lets an admin set up a
+    login-gated capability in either order (approve then add credentials, or add credentials then
+    approve) instead of forcing one specific sequence. The multi-tenant-reuse point is unchanged
+    either way: the same login-gated capability can be replayed by many clients, each with their
+    own stored credentials, without re-approving it or embedding any one client's secret in the
+    artifact itself. Admin-only, same as approve."""
     if not credential.is_admin:
         raise HTTPException(403, "Client is not authorized to manage capability credentials")
     try:
         artifact = store().load(capability_id)
     except FileNotFoundError as exc:
         raise HTTPException(404, "Capability not found") from exc
-    if artifact.lifecycle not in AGENT_EXPOSABLE_LIFECYCLES:
-        raise HTTPException(403, f"Capability '{capability_id}' is not approved yet")
 
     declared_inputs = {spec.name for spec in artifact.inputs}
     if not declared_inputs & CREDENTIAL_FIELD_NAMES:
